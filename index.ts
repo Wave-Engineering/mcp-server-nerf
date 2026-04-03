@@ -11,6 +11,8 @@ import { handleMode } from "./mode.ts";
 import { handleDarts } from "./darts.ts";
 import { handleBudget } from "./budget.ts";
 import { handleScope } from "./scope.ts";
+import { removeIndicator } from "./statusline.ts";
+import { NERF_INDICATOR_PREFIX } from "./indicator.ts";
 
 /**
  * Tool schemas for the nerf MCP server.
@@ -133,6 +135,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   return {
     content: [{ type: "text" as const, text: result }],
   };
+});
+
+// Clean up nerf indicator from statusline on process exit
+process.on("SIGTERM", () => {
+  try { removeIndicator(NERF_INDICATOR_PREFIX); } catch { /* best-effort cleanup */ }
+  process.exit(0);
+});
+process.on("SIGINT", () => {
+  try { removeIndicator(NERF_INDICATOR_PREFIX); } catch { /* best-effort cleanup */ }
+  process.exit(0);
 });
 
 const transport = new StdioServerTransport();

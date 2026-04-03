@@ -8,6 +8,7 @@
 import { readConfig, writeConfig, type NerfConfig } from "./config.ts";
 import { resolveSessionId } from "./session.ts";
 import { formatTokenCount } from "./status.ts";
+import { updateStatuslineIndicator } from "./indicator.ts";
 
 /**
  * Handle the nerf_budget tool call.
@@ -43,6 +44,7 @@ export async function handleBudget(
     darts: { soft, hard, ouch },
   };
   writeConfig(sessionId, newConfig);
+  await updateStatuslineIndicator(sessionId, newConfig);
 
   return [
     "Budget set:",

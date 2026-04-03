@@ -19,7 +19,7 @@ import { updateStatuslineIndicator } from "./indicator.ts";
 export async function handleBudget(
   params: Record<string, unknown>,
 ): Promise<string> {
-  const sessionId = resolveSessionId();
+  const sessionId = resolveSessionId(params.session_id as string | undefined);
   const config = readConfig(sessionId);
 
   const ouch = params.ouch as number | undefined;

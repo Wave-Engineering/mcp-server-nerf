@@ -31,6 +31,24 @@ describe("nerf_darts", () => {
     try { rmSync(`${path}.tmp`, { force: true }); } catch { /* ignore */ }
   });
 
+  test("darts uses explicit session_id param over env var", async () => {
+    const overrideId = `override-darts-${Date.now()}`;
+    const config: NerfConfig = {
+      mode: "hurt-me-plenty",
+      darts: { soft: 50_000, hard: 75_000, ouch: 100_000 },
+      session_id: overrideId,
+    };
+    writeConfig(overrideId, config);
+
+    delete process.env.CLAUDE_SESSION_ID;
+    const result = await handleDarts({ session_id: overrideId });
+
+    expect(result).toContain("soft   50k   warning");
+    expect(result).toContain("ouch   100k   compact or die");
+
+    try { rmSync(configPath(overrideId), { force: true }); } catch { /* ignore */ }
+  });
+
   test("darts returns current positions", async () => {
     const result = await handleDarts({});
 

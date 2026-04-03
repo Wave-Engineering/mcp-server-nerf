@@ -6,6 +6,8 @@
  * process spawning that is complex enough to warrant its own issue.
  */
 
+import { resolveSessionId } from "./session.ts";
+
 /**
  * Handle the nerf_scope tool call.
  *
@@ -15,13 +17,14 @@
 export async function handleScope(
   params: Record<string, unknown>,
 ): Promise<string> {
+  const sessionId = resolveSessionId(params.session_id as string | undefined);
   const interval = params.interval as number | undefined;
 
   const lines = [
     "nerf_scope is not yet implemented in the MCP server.",
     "",
     "To monitor context usage, use the crystallizer's built-in tracking",
-    "or run: cc-context watch --session <session_id>",
+    `or run: cc-context watch --session ${sessionId}`,
   ];
 
   if (interval !== undefined) {

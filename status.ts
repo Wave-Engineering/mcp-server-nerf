@@ -31,9 +31,9 @@ const MODE_DESCRIPTIONS: Record<string, string> = {
  * Handle the nerf_status tool call.
  */
 export async function handleStatus(
-  _params: Record<string, unknown>,
+  params: Record<string, unknown>,
 ): Promise<string> {
-  const sessionId = resolveSessionId();
+  const sessionId = resolveSessionId(params.session_id as string | undefined);
   const config = readConfig(sessionId);
   const modeName = config.mode;
   const modeDescription =

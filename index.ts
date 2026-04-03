@@ -10,6 +10,7 @@ import { handleStatus } from "./status.ts";
 import { handleMode } from "./mode.ts";
 import { handleDarts } from "./darts.ts";
 import { handleBudget } from "./budget.ts";
+import { handleScope } from "./scope.ts";
 
 /**
  * Tool schemas for the nerf MCP server.
@@ -105,7 +106,7 @@ const HANDLERS: Record<
   nerf_mode: async (params) => handleMode(params),
   nerf_darts: async (params) => handleDarts(params),
   nerf_budget: async (params) => handleBudget(params),
-  nerf_scope: async () => "not implemented",
+  nerf_scope: async (params) => handleScope(params),
 };
 
 const server = new Server(

@@ -8,6 +8,8 @@ import {
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { handleStatus } from "./status.ts";
 import { handleMode } from "./mode.ts";
+import { handleDarts } from "./darts.ts";
+import { handleBudget } from "./budget.ts";
 
 /**
  * Tool schemas for the nerf MCP server.
@@ -101,8 +103,8 @@ const HANDLERS: Record<
 > = {
   nerf_status: async (params) => handleStatus(params),
   nerf_mode: async (params) => handleMode(params),
-  nerf_darts: async () => "not implemented",
-  nerf_budget: async () => "not implemented",
+  nerf_darts: async (params) => handleDarts(params),
+  nerf_budget: async (params) => handleBudget(params),
   nerf_scope: async () => "not implemented",
 };
 

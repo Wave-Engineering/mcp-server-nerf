@@ -31,6 +31,22 @@ describe("nerf_budget", () => {
     try { rmSync(`${path}.tmp`, { force: true }); } catch { /* ignore */ }
   });
 
+  test("budget uses explicit session_id param over env var", async () => {
+    const overrideId = `override-budget-${Date.now()}`;
+    delete process.env.CLAUDE_SESSION_ID;
+
+    const result = await handleBudget({ ouch: 100_000, session_id: overrideId });
+
+    expect(result).toContain("Budget set:");
+    expect(result).toContain("ouch   100k");
+
+    // Verify config was written to override session
+    const config = readConfig(overrideId);
+    expect(config.darts.ouch).toBe(100_000);
+
+    try { rmSync(configPath(overrideId), { force: true }); } catch { /* ignore */ }
+  });
+
   test("budget computes proportional darts", async () => {
     const result = await handleBudget({ ouch: 200_000 });
 

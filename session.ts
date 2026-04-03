@@ -16,7 +16,12 @@ import { createHash } from "node:crypto";
  * 2. Scan /tmp for claude session artifacts (transcript/output files)
  * 3. Fallback: generate a stable ID from PID + process start time
  */
-export function resolveSessionId(): string {
+export function resolveSessionId(override?: string): string {
+  // 0. Explicit override from tool params
+  if (override) {
+    return override;
+  }
+
   // 1. Direct env var
   const envId = process.env.CLAUDE_SESSION_ID;
   if (envId) {

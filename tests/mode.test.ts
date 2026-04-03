@@ -42,6 +42,24 @@ describe("nerf_mode", () => {
     expect(result).toContain("CRYSTALLIZE_MODE: prompt");
   });
 
+  test("mode uses explicit session_id param over env var", async () => {
+    const overrideId = `override-mode-${Date.now()}`;
+    const config: NerfConfig = {
+      mode: "ultraviolence",
+      darts: { soft: 120_000, hard: 150_000, ouch: 200_000 },
+      session_id: overrideId,
+    };
+    writeConfig(overrideId, config);
+
+    // Don't set env — pass session_id in params
+    delete process.env.CLAUDE_SESSION_ID;
+    const result = await handleMode({ session_id: overrideId });
+
+    expect(result).toContain("Current mode: ultraviolence");
+
+    try { rmSync(configPath(overrideId), { force: true }); } catch { /* ignore */ }
+  });
+
   test("mode returns current mode from existing config", async () => {
     const config: NerfConfig = {
       mode: "ultraviolence",

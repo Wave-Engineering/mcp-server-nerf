@@ -62,6 +62,25 @@ describe("nerf_status", () => {
     expect(result).toContain("Context: unavailable");
   });
 
+  test("status uses explicit session_id param over env var", async () => {
+    const overrideId = `override-status-${Date.now()}`;
+    // Write config to the override session, not the env session
+    const config: NerfConfig = {
+      mode: "ultraviolence",
+      darts: { soft: 50_000, hard: 75_000, ouch: 100_000 },
+      session_id: overrideId,
+    };
+    writeConfig(overrideId, config);
+
+    const result = await handleStatus({ session_id: overrideId });
+
+    expect(result).toContain("nerf — ultraviolence");
+    expect(result).toContain("ouch   100k   compact or die");
+
+    // Clean up
+    try { rmSync(configPath(overrideId), { force: true }); } catch { /* ignore */ }
+  });
+
   test("status output format matches spec", async () => {
     const config: NerfConfig = {
       mode: "not-too-rough",

@@ -20,7 +20,7 @@ import { updateStatuslineIndicator } from "./indicator.ts";
 export async function handleDarts(
   params: Record<string, unknown>,
 ): Promise<string> {
-  const sessionId = resolveSessionId();
+  const sessionId = resolveSessionId(params.session_id as string | undefined);
   const config = readConfig(sessionId);
 
   const soft = params.soft as number | undefined;

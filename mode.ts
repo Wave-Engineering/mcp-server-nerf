@@ -38,7 +38,7 @@ const MODE_DESCRIPTIONS: Record<string, string> = {
 export async function handleMode(
   params: Record<string, unknown>,
 ): Promise<string> {
-  const sessionId = resolveSessionId();
+  const sessionId = resolveSessionId(params.session_id as string | undefined);
   const config = readConfig(sessionId);
 
   const requestedMode = params.mode as string | undefined;

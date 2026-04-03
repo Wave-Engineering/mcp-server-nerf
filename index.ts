@@ -15,10 +15,20 @@ import { removeIndicator } from "./statusline.ts";
 import { NERF_INDICATOR_PREFIX } from "./indicator.ts";
 
 /**
+ * Shared optional parameter included in every tool schema.
+ */
+const SESSION_ID_PROP = {
+  session_id: {
+    type: "string",
+    description: "Claude Code session ID. If omitted, resolved automatically.",
+  },
+} as const;
+
+/**
  * Tool schemas for the nerf MCP server.
  *
  * Each tool has a name, description, and inputSchema with typed parameters.
- * Handlers are stubs — actual logic comes in later issues (#220-#223).
+ * All tools accept an optional `session_id` for explicit session targeting.
  */
 export const TOOLS: Tool[] = [
   {
@@ -26,7 +36,7 @@ export const TOOLS: Tool[] = [
     description: "Show current mode, dart thresholds, and context usage",
     inputSchema: {
       type: "object" as const,
-      properties: {},
+      properties: { ...SESSION_ID_PROP },
     },
   },
   {
@@ -36,6 +46,7 @@ export const TOOLS: Tool[] = [
     inputSchema: {
       type: "object" as const,
       properties: {
+        ...SESSION_ID_PROP,
         mode: {
           type: "string",
           enum: ["not-too-rough", "hurt-me-plenty", "ultraviolence"],
@@ -51,6 +62,7 @@ export const TOOLS: Tool[] = [
     inputSchema: {
       type: "object" as const,
       properties: {
+        ...SESSION_ID_PROP,
         soft: {
           type: "number",
           description: "Soft dart threshold (token count)",
@@ -73,6 +85,7 @@ export const TOOLS: Tool[] = [
     inputSchema: {
       type: "object" as const,
       properties: {
+        ...SESSION_ID_PROP,
         ouch: {
           type: "number",
           description: "The ouch (max) dart threshold to set",
@@ -87,6 +100,7 @@ export const TOOLS: Tool[] = [
     inputSchema: {
       type: "object" as const,
       properties: {
+        ...SESSION_ID_PROP,
         interval: {
           type: "number",
           description: "Polling interval in milliseconds (default: 30000)",

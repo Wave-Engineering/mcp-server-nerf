@@ -27,6 +27,12 @@ describe("nerf_scope", () => {
     expect(result).toContain("will be used when the monitor is implemented");
   });
 
+  test("scope includes explicit session_id in help text", async () => {
+    const result = await handleScope({ session_id: "my-test-session-abc" });
+
+    expect(result).toContain("cc-context watch --session my-test-session-abc");
+  });
+
   test("scope without interval does not mention interval", async () => {
     const result = await handleScope({});
 

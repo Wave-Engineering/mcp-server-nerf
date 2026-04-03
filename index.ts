@@ -6,6 +6,8 @@ import {
   CallToolRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import { handleStatus } from "./status.ts";
+import { handleMode } from "./mode.ts";
 
 /**
  * Tool schemas for the nerf MCP server.
@@ -97,8 +99,8 @@ const HANDLERS: Record<
   string,
   (params: Record<string, unknown>) => Promise<string>
 > = {
-  nerf_status: async () => "not implemented",
-  nerf_mode: async () => "not implemented",
+  nerf_status: async (params) => handleStatus(params),
+  nerf_mode: async (params) => handleMode(params),
   nerf_darts: async () => "not implemented",
   nerf_budget: async () => "not implemented",
   nerf_scope: async () => "not implemented",

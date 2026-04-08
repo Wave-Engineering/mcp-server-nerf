@@ -141,4 +141,79 @@ describe("nerf_budget", () => {
     expect(result).toContain("60%");
     expect(result).toContain("75%");
   });
+
+  // Regression: #13 — same root cause as darts handler. TS compile-time cast
+  // at `budget.ts:25` does not coerce string JSON values, so stringified
+  // numeric inputs were rejected with a misleading error.
+  test("budget accepts string-valued ouch and normalizes to integer", async () => {
+    const result = await handleBudget({ ouch: "200000" });
+
+    expect(result).not.toContain("Error");
+    expect(result).toContain("Budget set:");
+    expect(result).toContain("soft   120k");
+    expect(result).toContain("hard   150k");
+    expect(result).toContain("ouch   200k");
+
+    const config = readConfig(testSessionId);
+    expect(config.darts.ouch).toBe(200_000);
+    expect(config.darts.soft).toBe(120_000);
+    expect(config.darts.hard).toBe(150_000);
+    expect(typeof config.darts.ouch).toBe("number");
+    expect(typeof config.darts.soft).toBe("number");
+    expect(typeof config.darts.hard).toBe("number");
+  });
+
+  test("budget rejects non-numeric string ouch with clear error", async () => {
+    const result = await handleBudget({ ouch: "abc" });
+
+    expect(result).toContain("Error");
+    expect(result).toContain("ouch");
+  });
+
+  test("budget rejects suffix-notation strings like '200k'", async () => {
+    const result = await handleBudget({ ouch: "200k" });
+
+    expect(result).toContain("Error");
+    expect(result).toContain("ouch");
+  });
+
+  test("budget rejects string values that parse to non-integer floats", async () => {
+    const result = await handleBudget({ ouch: "200000.5" });
+
+    expect(result).toContain("Error");
+    expect(result).toContain("positive integer");
+  });
+
+  test("budget rejects string zero and negative values", async () => {
+    const zero = await handleBudget({ ouch: "0" });
+    expect(zero).toContain("Error");
+    expect(zero).toContain("positive integer");
+
+    const neg = await handleBudget({ ouch: "-100000" });
+    expect(neg).toContain("Error");
+    expect(neg).toContain("positive integer");
+  });
+
+  test("budget treats explicit null as 'not provided' and emits the missing-param error", async () => {
+    // Same null-as-undefined treatment as darts. The "ouch is required" error
+    // should fire instead of a "got null" type-violation message.
+    const result = await handleBudget({ ouch: null });
+
+    expect(result).toContain("Error");
+    expect(result).toContain("ouch");
+    expect(result).toContain("required");
+  });
+
+  test("budget accepts JSON-compliant scientific notation strings", async () => {
+    // Number("2e5") === 200000, passes the existing isInteger check.
+    // Locked in via test so a future stricter parser cannot silently regress it.
+    const result = await handleBudget({ ouch: "2e5" });
+
+    expect(result).not.toContain("Error");
+    expect(result).toContain("Budget set:");
+    expect(result).toContain("ouch   200k");
+
+    const config = readConfig(testSessionId);
+    expect(config.darts.ouch).toBe(200_000);
+  });
 });

@@ -10,12 +10,18 @@ import { readConfig, writeConfig, type NerfConfig } from "./config.ts";
 import { resolveSessionId } from "./session.ts";
 import { formatTokenCount } from "./status.ts";
 import { updateStatuslineIndicator } from "./indicator.ts";
+import { coerceNumericInput, formatRawValue } from "./numeric.ts";
 
 /**
  * Handle the nerf_darts tool call.
  *
  * - No args: return current dart positions with labels
  * - With args: validate all-or-nothing, ordering, positivity. Write to config.
+ *
+ * Accepts numeric arguments as either JS numbers or numeric strings; some
+ * MCP clients stringify tool-call args despite the schema saying `type: number`.
+ * Non-numeric or non-integer inputs are rejected with the original value
+ * quoted in the error message for diagnosability. See issue #13.
  */
 export async function handleDarts(
   params: Record<string, unknown>,
@@ -23,9 +29,14 @@ export async function handleDarts(
   const sessionId = resolveSessionId(params.session_id as string | undefined);
   const config = readConfig(sessionId);
 
-  const soft = params.soft as number | undefined;
-  const hard = params.hard as number | undefined;
-  const ouch = params.ouch as number | undefined;
+  // Preserve originals for error messages; coerce separately for validation.
+  const softRaw = params.soft;
+  const hardRaw = params.hard;
+  const ouchRaw = params.ouch;
+
+  const soft = coerceNumericInput(softRaw);
+  const hard = coerceNumericInput(hardRaw);
+  const ouch = coerceNumericInput(ouchRaw);
 
   // No args — return current positions
   if (soft === undefined && hard === undefined && ouch === undefined) {
@@ -37,15 +48,15 @@ export async function handleDarts(
     return "Error: must provide all three darts (soft, hard, ouch) or none. Partial updates are not allowed.";
   }
 
-  // Validate positive integers
+  // Validate positive integers (rejects NaN, Infinity, floats, non-numeric strings)
   if (!Number.isInteger(soft) || soft <= 0) {
-    return `Error: soft must be a positive integer, got ${soft}`;
+    return `Error: soft must be a positive integer, got ${formatRawValue(softRaw)}`;
   }
   if (!Number.isInteger(hard) || hard <= 0) {
-    return `Error: hard must be a positive integer, got ${hard}`;
+    return `Error: hard must be a positive integer, got ${formatRawValue(hardRaw)}`;
   }
   if (!Number.isInteger(ouch) || ouch <= 0) {
-    return `Error: ouch must be a positive integer, got ${ouch}`;
+    return `Error: ouch must be a positive integer, got ${formatRawValue(ouchRaw)}`;
   }
 
   // Validate ordering: soft < hard < ouch

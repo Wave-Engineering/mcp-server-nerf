@@ -199,4 +199,132 @@ describe("nerf_darts", () => {
     expect(updated.mode).toBe("ultraviolence");
     expect(updated.darts.soft).toBe(90_000);
   });
+
+  // Regression: #13 — MCP clients that stringify numeric tool-call args
+  // (observed from a cc-workflow Claude Code session, 2026-04-08) were blocked
+  // because `params.soft as number` is a TS compile-time cast with no runtime
+  // coercion. The handler must coerce string-form numbers before validating.
+  test("darts accepts string-valued numeric inputs and normalizes to integers", async () => {
+    const result = await handleDarts({
+      soft: "90000",
+      hard: "120000",
+      ouch: "160000",
+    });
+
+    expect(result).not.toContain("Error");
+    expect(result).toContain("soft   90k   warning");
+    expect(result).toContain("hard   120k   crystallize");
+    expect(result).toContain("ouch   160k   compact or die");
+
+    // Config must hold native numbers, not strings — downstream consumers
+    // (crystallizer hook, statusline indicator) rely on integer math.
+    const config = readConfig(testSessionId);
+    expect(config.darts.soft).toBe(90_000);
+    expect(config.darts.hard).toBe(120_000);
+    expect(config.darts.ouch).toBe(160_000);
+    expect(typeof config.darts.soft).toBe("number");
+    expect(typeof config.darts.hard).toBe("number");
+    expect(typeof config.darts.ouch).toBe("number");
+  });
+
+  test("darts accepts a mix of string and number inputs", async () => {
+    const result = await handleDarts({
+      soft: "90000",
+      hard: 120_000,
+      ouch: "160000",
+    });
+
+    expect(result).not.toContain("Error");
+    expect(result).toContain("soft   90k   warning");
+    expect(result).toContain("hard   120k   crystallize");
+    expect(result).toContain("ouch   160k   compact or die");
+  });
+
+  test("darts rejects non-numeric string inputs with a clear error", async () => {
+    const result = await handleDarts({
+      soft: "abc",
+      hard: 120_000,
+      ouch: 160_000,
+    });
+
+    expect(result).toContain("Error");
+    expect(result).toContain("soft");
+  });
+
+  test("darts rejects suffix-notation strings like '500k' — suffix parsing is client-side", async () => {
+    const result = await handleDarts({
+      soft: "500k",
+      hard: 650_000,
+      ouch: 750_000,
+    });
+
+    expect(result).toContain("Error");
+    expect(result).toContain("soft");
+  });
+
+  test("darts rejects string values that parse to non-integer floats", async () => {
+    const result = await handleDarts({
+      soft: "90000.5",
+      hard: 120_000,
+      ouch: 160_000,
+    });
+
+    expect(result).toContain("Error");
+    expect(result).toContain("positive integer");
+  });
+
+  test("darts rejects string zero and negative values", async () => {
+    const zero = await handleDarts({
+      soft: "0",
+      hard: 120_000,
+      ouch: 160_000,
+    });
+    expect(zero).toContain("Error");
+    expect(zero).toContain("positive integer");
+
+    const neg = await handleDarts({
+      soft: "-100",
+      hard: 120_000,
+      ouch: 160_000,
+    });
+    expect(neg).toContain("Error");
+    expect(neg).toContain("positive integer");
+  });
+
+  test("darts treats explicit null as 'not provided' and triggers partial-args error", async () => {
+    // JSON allows explicit null distinct from missing field. The handler's
+    // "all or none" semantic should still apply when null appears as a
+    // sentinel for absence — emit the partial-args error, not a misleading
+    // "got null" type error.
+    const result = await handleDarts({
+      soft: null,
+      hard: 120_000,
+      ouch: 160_000,
+    });
+
+    expect(result).toContain("Error");
+    expect(result).toContain("all three");
+  });
+
+  test("darts accepts JSON-compliant scientific notation strings", async () => {
+    // Number("9e4") === 90000, Number.isInteger(90000) === true. This is a
+    // permissive but predictable side effect of using `Number()` for coercion;
+    // locked in via this test so a future stricter parser doesn't silently
+    // regress it.
+    const result = await handleDarts({
+      soft: "9e4",
+      hard: "1.2e5",
+      ouch: "1.6e5",
+    });
+
+    expect(result).not.toContain("Error");
+    expect(result).toContain("soft   90k   warning");
+    expect(result).toContain("hard   120k   crystallize");
+    expect(result).toContain("ouch   160k   compact or die");
+
+    const config = readConfig(testSessionId);
+    expect(config.darts.soft).toBe(90_000);
+    expect(config.darts.hard).toBe(120_000);
+    expect(config.darts.ouch).toBe(160_000);
+  });
 });

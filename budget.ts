@@ -9,12 +9,15 @@ import { readConfig, writeConfig, type NerfConfig } from "./config.ts";
 import { resolveSessionId } from "./session.ts";
 import { formatTokenCount } from "./status.ts";
 import { updateStatuslineIndicator } from "./indicator.ts";
+import { coerceNumericInput, formatRawValue } from "./numeric.ts";
 
 /**
  * Handle the nerf_budget tool call.
  *
  * Requires `ouch` parameter. Computes soft and hard proportionally,
  * writes all three darts to config, returns new positions.
+ *
+ * Accepts `ouch` as either a JS number or a numeric string (see issue #13).
  */
 export async function handleBudget(
   params: Record<string, unknown>,
@@ -22,16 +25,17 @@ export async function handleBudget(
   const sessionId = resolveSessionId(params.session_id as string | undefined);
   const config = readConfig(sessionId);
 
-  const ouch = params.ouch as number | undefined;
+  const ouchRaw = params.ouch;
+  const ouch = coerceNumericInput(ouchRaw);
 
   // Validate ouch is provided
   if (ouch === undefined) {
     return "Error: ouch parameter is required";
   }
 
-  // Validate positive integer
+  // Validate positive integer (rejects NaN, Infinity, floats, non-numeric strings)
   if (!Number.isInteger(ouch) || ouch <= 0) {
-    return `Error: ouch must be a positive integer, got ${ouch}`;
+    return `Error: ouch must be a positive integer, got ${formatRawValue(ouchRaw)}`;
   }
 
   // Compute proportional darts

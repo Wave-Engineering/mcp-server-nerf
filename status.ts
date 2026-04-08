@@ -53,7 +53,12 @@ export async function handleStatus(
   // Format context line
   let contextLine: string;
   if (contextUsage) {
-    const pct = Math.round(contextUsage.percent);
+    // Compute percent against the LOCAL config's ouch, not the analyzer's
+    // `percent` field. The upstream context-analyzer.sh computes its percent
+    // against its own hardcoded `limit` (the global crystallizer default),
+    // which diverges from the displayed denominator the moment a user lifts
+    // their nerf darts via nerf_darts/nerf_budget. See issue #15.
+    const pct = Math.round((contextUsage.total / config.darts.ouch) * 100);
     contextLine = `Context: ${formatTokenCount(contextUsage.total)}/${ouchStr} (${pct}%)`;
   } else {
     contextLine = "Context: unavailable";

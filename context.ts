@@ -122,6 +122,13 @@ export async function getContextUsage(
     // The analyzer is a bash library — source it and call analyze_context
     const cmd = `bash -c 'source "${analyzerPath}" && analyze_context "${transcript}"'`;
 
+    // NOTE: We use Node's `execSync` here, which inherits the parent process's
+    // environment by default. If we ever migrate this call to `Bun.spawnSync`
+    // for performance, env inheritance behaves differently — Bun does NOT
+    // automatically forward runtime mutations of `process.env` to the child,
+    // so we'd need to pass `env: { ...process.env }` explicitly. Surfaced as
+    // a gotcha by the cc-workflow team during a multi-agent wave; preventive
+    // note for whoever touches this next.
     const raw = execSync(cmd, {
       encoding: "utf-8",
       timeout: 10000,

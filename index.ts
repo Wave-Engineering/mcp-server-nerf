@@ -13,6 +13,7 @@ import { handleBudget } from "./budget.ts";
 import { handleScope } from "./scope.ts";
 import { removeIndicator } from "./statusline.ts";
 import { NERF_INDICATOR_PREFIX } from "./indicator.ts";
+import { log } from "./logger.ts";
 
 /**
  * Shared optional parameter included in every tool schema.
@@ -137,29 +138,47 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
   const handler = HANDLERS[name];
+  const start = performance.now();
 
   if (!handler) {
+    const ms = Math.round(performance.now() - start);
+    log.warn("tool_call", { tool: name, ok: false, ms }, "Unknown tool");
     return {
       content: [{ type: "text" as const, text: `Unknown tool: ${name}` }],
       isError: true,
     };
   }
 
-  const result = await handler((args ?? {}) as Record<string, unknown>);
-  return {
-    content: [{ type: "text" as const, text: result }],
-  };
+  try {
+    const result = await handler((args ?? {}) as Record<string, unknown>);
+    const ms = Math.round(performance.now() - start);
+    log.info("tool_call", { tool: name, ok: true, ms });
+    return {
+      content: [{ type: "text" as const, text: result }],
+    };
+  } catch (err: unknown) {
+    const ms = Math.round(performance.now() - start);
+    const error = err instanceof Error ? err.message : String(err);
+    log.error("tool_call", { tool: name, ok: false, ms, error });
+    return {
+      content: [{ type: "text" as const, text: `Error: ${error}` }],
+      isError: true,
+    };
+  }
 });
 
 // Clean up nerf indicator from statusline on process exit
 process.on("SIGTERM", () => {
+  log.info("state_change", { what: "shutdown", to: "exiting", reason: "SIGTERM" });
   try { removeIndicator(NERF_INDICATOR_PREFIX); } catch { /* best-effort cleanup */ }
   process.exit(0);
 });
 process.on("SIGINT", () => {
+  log.info("state_change", { what: "shutdown", to: "exiting", reason: "SIGINT" });
   try { removeIndicator(NERF_INDICATOR_PREFIX); } catch { /* best-effort cleanup */ }
   process.exit(0);
 });
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
+log.info("startup", { version: "1.0.0", config: { tools: TOOLS.length } });

@@ -11,6 +11,7 @@ import { resolveSessionId } from "./session.ts";
 import { formatTokenCount } from "./status.ts";
 import { updateStatuslineIndicator } from "./indicator.ts";
 import { coerceNumericInput, formatRawValue } from "./numeric.ts";
+import { log } from "./logger.ts";
 
 /**
  * Handle the nerf_darts tool call.
@@ -68,12 +69,18 @@ export async function handleDarts(
   }
 
   // Write to config
+  const oldDarts = { ...config.darts };
   const newConfig: NerfConfig = {
     ...config,
     darts: { soft, hard, ouch },
   };
   writeConfig(sessionId, newConfig);
   await updateStatuslineIndicator(sessionId, newConfig);
+  log.info("state_change", {
+    what: "darts",
+    from: oldDarts,
+    to: { soft, hard, ouch },
+  });
 
   return formatDarts(newConfig);
 }

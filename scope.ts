@@ -10,6 +10,7 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { log } from "./logger.ts";
 /** Path to the cc-context CLI script. */
 const CC_CONTEXT_PATH = join(
   homedir(),
@@ -89,6 +90,7 @@ export async function handleScope(
   const ccContextPath = process.env.NERF_CC_CONTEXT_PATH ?? CC_CONTEXT_PATH;
 
   if (!existsSync(ccContextPath)) {
+    log.warn("subprocess", { cmd: "cc-context", exit_code: -1, ms: 0 }, "cc-context binary not found");
     return [
       "Error: cc-context not found at expected path.",
       `Expected: ${ccContextPath}`,
@@ -101,6 +103,7 @@ export async function handleScope(
   const termCmd = buildTerminalCommand(ccContextPath, explicitSessionId);
 
   if (!termCmd) {
+    log.warn("subprocess", { cmd: "terminal", exit_code: -1, ms: 0 }, "No terminal emulator detected");
     // No terminal detected — return manual command
     const cmdStr = explicitSessionId
       ? `cc-context watch --session ${explicitSessionId}`
@@ -121,14 +124,19 @@ export async function handleScope(
   // Spawn the terminal as a detached process (skip in dry-run / test mode)
   if (process.env.NERF_SCOPE_DRY_RUN !== "1") {
     const [command, ...args] = termCmd.argv;
+    const spawnStart = performance.now();
     try {
       const child = spawn(command, args, {
         detached: true,
         stdio: "ignore",
       });
       child.unref();
+      const ms = Math.round(performance.now() - spawnStart);
+      log.info("subprocess", { cmd: termCmd.terminal, exit_code: 0, ms });
     } catch (err: unknown) {
+      const ms = Math.round(performance.now() - spawnStart);
       const msg = err instanceof Error ? err.message : String(err);
+      log.error("subprocess", { cmd: termCmd.terminal, exit_code: 1, ms, stderr: msg.slice(0, 200) });
       const cmdStr = explicitSessionId
         ? `cc-context watch --session ${explicitSessionId}`
         : "cc-context watch";

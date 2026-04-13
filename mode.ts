@@ -13,6 +13,7 @@ import {
 } from "./config.ts";
 import { resolveSessionId } from "./session.ts";
 import { updateStatuslineIndicator } from "./indicator.ts";
+import { log } from "./logger.ts";
 
 const VALID_MODES: NerfConfig["mode"][] = [
   "not-too-rough",
@@ -60,12 +61,14 @@ export async function handleMode(
   }
 
   // Set mode
+  const oldMode = config.mode;
   const newConfig: NerfConfig = {
     ...config,
     mode: requestedMode as NerfConfig["mode"],
   };
   writeConfig(sessionId, newConfig);
   await updateStatuslineIndicator(sessionId, newConfig);
+  log.info("state_change", { what: "mode", from: oldMode, to: requestedMode });
 
   const description = MODE_DESCRIPTIONS[requestedMode] ?? "unknown mode";
   const crystallizerMode = MODE_MAP[requestedMode] ?? "unknown";

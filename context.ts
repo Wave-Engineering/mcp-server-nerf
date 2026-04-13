@@ -12,6 +12,7 @@ import { execSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { log } from "./logger.ts";
 
 export interface ContextUsage {
   total: number;
@@ -45,6 +46,7 @@ function findTranscript(sessionId: string): string | null {
     return null;
   }
 
+  const start = performance.now();
   try {
     // Use find to locate the transcript — same approach as cc-context
     const result = execSync(
@@ -52,8 +54,13 @@ function findTranscript(sessionId: string): string | null {
       { encoding: "utf-8", timeout: 5000 },
     ).trim();
 
-    return result.length > 0 ? result : null;
+    const ms = Math.round(performance.now() - start);
+    const found = result.length > 0;
+    log.debug("subprocess", { cmd: "find", exit_code: 0, ms, found });
+    return found ? result : null;
   } catch {
+    const ms = Math.round(performance.now() - start);
+    log.debug("subprocess", { cmd: "find", exit_code: 1, ms, found: false });
     return null;
   }
 }
@@ -102,41 +109,49 @@ function parseAnalyzerOutput(raw: string): ContextUsage | null {
 export async function getContextUsage(
   sessionId: string,
 ): Promise<ContextUsage | null> {
+  // Resolve the analyzer script path — allow override for testing
+  const analyzerPath =
+    process.env.NERF_ANALYZER_PATH ?? ANALYZER_PATH;
+
+  // Verify the analyzer script exists
+  if (!existsSync(analyzerPath)) {
+    log.debug("subprocess", { cmd: "context-analyzer", exit_code: -1, ms: 0 }, "Analyzer script not found");
+    return null;
+  }
+
+  // Find the transcript for this session
+  const transcript = findTranscript(sessionId);
+  if (!transcript) {
+    return null;
+  }
+
+  // Shell out to the analyzer
+  // The analyzer is a bash library — source it and call analyze_context
+  const cmd = `bash -c 'source "${analyzerPath}" && analyze_context "${transcript}"'`;
+
+  // NOTE: We use Node's `execSync` here, which inherits the parent process's
+  // environment by default. If we ever migrate this call to `Bun.spawnSync`
+  // for performance, env inheritance behaves differently — Bun does NOT
+  // automatically forward runtime mutations of `process.env` to the child,
+  // so we'd need to pass `env: { ...process.env }` explicitly. Surfaced as
+  // a gotcha by the cc-workflow team during a multi-agent wave; preventive
+  // note for whoever touches this next.
+  const analyzerStart = performance.now();
   try {
-    // Resolve the analyzer script path — allow override for testing
-    const analyzerPath =
-      process.env.NERF_ANALYZER_PATH ?? ANALYZER_PATH;
-
-    // Verify the analyzer script exists
-    if (!existsSync(analyzerPath)) {
-      return null;
-    }
-
-    // Find the transcript for this session
-    const transcript = findTranscript(sessionId);
-    if (!transcript) {
-      return null;
-    }
-
-    // Shell out to the analyzer
-    // The analyzer is a bash library — source it and call analyze_context
-    const cmd = `bash -c 'source "${analyzerPath}" && analyze_context "${transcript}"'`;
-
-    // NOTE: We use Node's `execSync` here, which inherits the parent process's
-    // environment by default. If we ever migrate this call to `Bun.spawnSync`
-    // for performance, env inheritance behaves differently — Bun does NOT
-    // automatically forward runtime mutations of `process.env` to the child,
-    // so we'd need to pass `env: { ...process.env }` explicitly. Surfaced as
-    // a gotcha by the cc-workflow team during a multi-agent wave; preventive
-    // note for whoever touches this next.
     const raw = execSync(cmd, {
       encoding: "utf-8",
       timeout: 10000,
       stdio: ["pipe", "pipe", "pipe"],
     }).trim();
 
+    const ms = Math.round(performance.now() - analyzerStart);
+    log.info("subprocess", { cmd: "context-analyzer", exit_code: 0, ms });
+
     return parseAnalyzerOutput(raw);
-  } catch {
+  } catch (err: unknown) {
+    const ms = Math.round(performance.now() - analyzerStart);
+    const stderr = err instanceof Error ? err.message.slice(0, 200) : "";
+    log.warn("subprocess", { cmd: "context-analyzer", exit_code: 1, ms, stderr });
     return null;
   }
 }

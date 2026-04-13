@@ -7,6 +7,7 @@
 
 import { readdirSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { log } from "./logger.ts";
 
 /**
  * Resolve the session ID from the Claude Code environment.
@@ -19,23 +20,28 @@ import { createHash } from "node:crypto";
 export function resolveSessionId(override?: string): string {
   // 0. Explicit override from tool params
   if (override) {
+    log.debug("state_change", { what: "session", to: override }, "Resolved via explicit override");
     return override;
   }
 
   // 1. Direct env var
   const envId = process.env.CLAUDE_SESSION_ID;
   if (envId) {
+    log.debug("state_change", { what: "session", to: envId }, "Resolved via CLAUDE_SESSION_ID env var");
     return envId;
   }
 
   // 2. Scan /tmp for session artifacts
   const scanned = scanForSessionArtifacts();
   if (scanned) {
+    log.debug("state_change", { what: "session", to: scanned }, "Resolved via artifact scan");
     return scanned;
   }
 
   // 3. Fallback: stable ID from PID + timestamp
-  return generateStableId();
+  const stableId = generateStableId();
+  log.debug("state_change", { what: "session", to: stableId }, "Resolved via stable ID fallback");
+  return stableId;
 }
 
 /**

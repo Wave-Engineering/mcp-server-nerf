@@ -13,7 +13,17 @@ import { handleBudget } from "./budget.ts";
 import { handleScope } from "./scope.ts";
 import { removeIndicator } from "./statusline.ts";
 import { NERF_INDICATOR_PREFIX } from "./indicator.ts";
+import { isSubcommand, runSubcommand } from "./cli.ts";
 import { log } from "./logger.ts";
+
+// Subcommand dispatch — one-shot CLI mode for hook integrations. When argv[2]
+// is a known subcommand we run it and exit before any MCP setup happens, so
+// the binary doesn't try to read stdin or register signal handlers.
+const argv = process.argv.slice(2);
+if (argv.length > 0 && isSubcommand(argv[0])) {
+  await runSubcommand(argv[0], argv.slice(1));
+  process.exit(0);
+}
 
 /**
  * Shared optional parameter included in every tool schema.

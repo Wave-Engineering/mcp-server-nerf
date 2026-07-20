@@ -17,7 +17,7 @@ import { TOOLS } from "../index.ts";
 
 function createServer(): Server {
   const server = new Server(
-    { name: "nerf-server", version: "1.0.0" },
+    { name: "nerf-server", version: "1.2.4" },
     { capabilities: { tools: {} } }
   );
 

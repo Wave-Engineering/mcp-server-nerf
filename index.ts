@@ -138,7 +138,7 @@ const HANDLERS: Record<
 };
 
 const server = new Server(
-  { name: "nerf-server", version: "1.2.4" },
+  { name: "nerf-server", version: "2.0.0" },
   { capabilities: { tools: {} } }
 );
 
@@ -192,4 +192,4 @@ process.on("SIGINT", () => {
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
-log.info("startup", { version: "1.2.4", config: { tools: TOOLS.length } });
+log.info("startup", { version: "2.0.0", config: { tools: TOOLS.length } });

@@ -8,10 +8,9 @@
  */
 
 import { test, expect, describe, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createHash } from "node:crypto";
 import { computeIndicator, updateStatuslineIndicator, NERF_INDICATOR_PREFIX } from "../indicator.ts";
 import { resolveProjectRoot } from "../statusline.ts";
 import type { ContextReading } from "../context.ts";
@@ -81,52 +80,37 @@ describe("computeIndicator", () => {
 describe("updateStatuslineIndicator", () => {
   let stateDir: string;
   let originalStateDir: string | undefined;
-  let agentFile: string;
-  let originalAgentContent: string | null = null;
+  let root: string;
+  let devName: string;
+  let suiteRootBefore: string | undefined;
 
   beforeEach(() => {
     stateDir = mkdtempSync(join(tmpdir(), "nerf-indicator-state-"));
     originalStateDir = process.env.CLAUDE_CONTEXT_STATE_DIR;
     process.env.CLAUDE_CONTEXT_STATE_DIR = stateDir;
 
-    // Set up agent identity file so statusline helpers resolve to a known path
-    const projectRoot = resolveProjectRoot();
-    const dirHash = createHash("md5").update(projectRoot).digest("hex");
-    agentFile = `/tmp/claude-agent-${dirHash}.json`;
-
-    try {
-      originalAgentContent = readFileSync(agentFile, "utf-8");
-    } catch {
-      originalAgentContent = null;
-    }
-
+    // A temp project root with its own durable identity, so the statusline
+    // helpers resolve to a test-only file and never to the developer's own.
+    root = mkdtempSync(join(tmpdir(), "nerf-indicator-root-"));
+    suiteRootBefore = process.env.NERF_PROJECT_ROOT;
+    process.env.NERF_PROJECT_ROOT = root;
+    devName = `indicator-test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    mkdirSync(join(root, ".claude"));
     writeFileSync(
-      agentFile,
-      JSON.stringify({
-        dev_name: `indicator-test-${Date.now()}`,
-        dev_avatar: "\u{1F9EA}",
-        dev_team: "test",
-      }),
+      join(root, ".claude", "agent-identity.json"),
+      JSON.stringify({ dev_name: devName, dev_avatar: "\u{1F9EA}", dev_team: "test" }),
       "utf-8",
     );
+    expect(resolveProjectRoot()).toBe(root);
   });
 
   afterEach(() => {
     if (originalStateDir === undefined) delete process.env.CLAUDE_CONTEXT_STATE_DIR;
     else process.env.CLAUDE_CONTEXT_STATE_DIR = originalStateDir;
+    process.env.NERF_PROJECT_ROOT = suiteRootBefore;
     rmSync(stateDir, { recursive: true, force: true });
-
-    // Clean up statusline file (resolve from current agent file)
-    try {
-      const data = JSON.parse(readFileSync(agentFile, "utf-8")) as { dev_name?: string };
-      if (data.dev_name) rmSync(`/tmp/claude-statusline-${data.dev_name}.json`, { force: true });
-    } catch { /* ignore */ }
-
-    if (originalAgentContent !== null) {
-      writeFileSync(agentFile, originalAgentContent, "utf-8");
-    } else {
-      rmSync(agentFile, { force: true });
-    }
+    rmSync(root, { recursive: true, force: true });
+    rmSync(`/tmp/claude-statusline-${devName}.json`, { force: true });
   });
 
   /** Persist a reading exactly as the statusline does. */
@@ -144,10 +128,8 @@ describe("updateStatuslineIndicator", () => {
   /** Read the nerf indicators from the statusline file for the test agent. */
   function nerfIndicators(): string[] {
     try {
-      const agentData = JSON.parse(readFileSync(agentFile, "utf-8")) as { dev_name?: string };
-      if (!agentData.dev_name) return [];
       const statusData = JSON.parse(
-        readFileSync(`/tmp/claude-statusline-${agentData.dev_name}.json`, "utf-8"),
+        readFileSync(`/tmp/claude-statusline-${devName}.json`, "utf-8"),
       ) as { indicators?: string[] };
       return (statusData.indicators ?? []).filter((i) => i.startsWith(NERF_INDICATOR_PREFIX));
     } catch {

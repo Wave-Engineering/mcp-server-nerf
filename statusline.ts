@@ -8,15 +8,19 @@
 import { readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { join } from "node:path";
 
 interface StatuslineData {
   indicators: string[];
 }
 
 /**
- * Resolve the project root via git.
+ * Resolve the project root via git. `NERF_PROJECT_ROOT` overrides it, so tests
+ * can run against a temp root and never resolve — or write into — the
+ * developer's real identity and statusline files.
  */
 export function resolveProjectRoot(): string {
+  if (process.env.NERF_PROJECT_ROOT) return process.env.NERF_PROJECT_ROOT;
   try {
     return execSync("git rev-parse --show-toplevel", {
       encoding: "utf-8",
@@ -29,16 +33,22 @@ export function resolveProjectRoot(): string {
 
 /**
  * Resolve the dev name from the agent identity file.
- * Reads /tmp/claude-agent-<dir_hash>.json where dir_hash is md5 of project root.
+ *
+ * Same order as claudecode-workflow's statusline and `/name`: the durable
+ * `<project_root>/.claude/agent-identity.json` when it exists, else the legacy
+ * `/tmp/claude-agent-<md5(project_root)>.json`. Reading only the /tmp copy
+ * left nerf with no identity — and so no indicator at all — after every
+ * reboot, because /tmp is wiped and `/name` does not recreate it (#35).
+ *
+ * `projectRoot` is injectable for tests; production callers omit it.
  */
-export function resolveDevName(): string | null {
+export function resolveDevName(projectRoot: string = resolveProjectRoot()): string | null {
+  const durable = join(projectRoot, ".claude", "agent-identity.json");
+  const dirHash = createHash("md5").update(projectRoot).digest("hex");
+  const agentFile = existsSync(durable) ? durable : `/tmp/claude-agent-${dirHash}.json`;
   try {
-    const projectRoot = resolveProjectRoot();
-    const dirHash = createHash("md5").update(projectRoot).digest("hex");
-    const agentFile = `/tmp/claude-agent-${dirHash}.json`;
-    const raw = readFileSync(agentFile, "utf-8");
-    const data = JSON.parse(raw) as { dev_name?: string };
-    return data.dev_name ?? null;
+    const data = JSON.parse(readFileSync(agentFile, "utf-8")) as { dev_name?: string };
+    return data.dev_name || null;
   } catch {
     return null;
   }

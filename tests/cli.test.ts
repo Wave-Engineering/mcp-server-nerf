@@ -8,8 +8,9 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { existsSync, readFileSync, writeFileSync, rmSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import {
   isSubcommand,
   parseSessionIdFlag,
@@ -123,33 +124,26 @@ describe("renderWatchFrame", () => {
 });
 
 /**
- * The smoke tests below exercise the production code paths but rely on the
- * absence of an agent identity file for THIS project root, which forces
- * resolveStatuslineFile() to return null and turns indicator helpers into
- * graceful no-ops. We guard the agent file at the start of each test and
- * restore it at the end so a developer who happens to have one cached in
- * /tmp doesn't see flaky failures.
+ * The smoke tests below exercise the production code paths with no agent
+ * identity, which forces resolveStatuslineFile() to return null and turns the
+ * indicator helpers into graceful no-ops. NERF_PROJECT_ROOT points nerf at an
+ * empty temp root, so neither a developer's real `.claude/agent-identity.json`
+ * nor a cached /tmp copy can make these tests write into a live statusline.
  */
 describe("subcommand smoke tests (no-agent-file path)", () => {
-  let agentFile: string;
-  let savedAgentContent: string | null = null;
+  let root: string;
+  let suiteRootBefore: string | undefined;
 
   beforeEach(() => {
-    const projectRoot = resolveProjectRoot();
-    const dirHash = createHash("md5").update(projectRoot).digest("hex");
-    agentFile = `/tmp/claude-agent-${dirHash}.json`;
-    if (existsSync(agentFile)) {
-      savedAgentContent = readFileSync(agentFile, "utf-8");
-      rmSync(agentFile, { force: true });
-    } else {
-      savedAgentContent = null;
-    }
+    root = mkdtempSync(join(tmpdir(), "nerf-cli-root-"));
+    suiteRootBefore = process.env.NERF_PROJECT_ROOT;
+    process.env.NERF_PROJECT_ROOT = root;
+    expect(resolveProjectRoot()).toBe(root);
   });
 
   afterEach(() => {
-    if (savedAgentContent !== null) {
-      writeFileSync(agentFile, savedAgentContent, "utf-8");
-    }
+    process.env.NERF_PROJECT_ROOT = suiteRootBefore;
+    rmSync(root, { recursive: true, force: true });
   });
 
   test("clearIndicatorCommand does not throw without an agent file", () => {

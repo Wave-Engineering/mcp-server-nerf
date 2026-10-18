@@ -10,6 +10,7 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import {
   mkdtempSync,
+  mkdirSync,
   rmSync,
   readFileSync,
   writeFileSync,
@@ -114,62 +115,66 @@ describe("statusline", () => {
     expect(root.length).toBeGreaterThan(0);
   });
 
-  test("resolveDevName with mock agent file", () => {
-    // Create a mock agent file keyed to the current project root
-    const projectRoot = resolveProjectRoot();
-    const dirHash = createHash("md5").update(projectRoot).digest("hex");
-    const agentFile = `/tmp/claude-agent-${dirHash}.json`;
-
-    // Check if file already exists (from real session) — preserve and restore
-    let originalContent: string | null = null;
+  test("NERF_PROJECT_ROOT overrides the git root, and resolveDevName() follows it", () => {
+    const root = mkdtempSync(join(tmpdir(), "nerf-override-root-"));
+    const tmpAgentFile = `/tmp/claude-agent-${createHash("md5").update(root).digest("hex")}.json`;
+    const suiteRootBefore = process.env.NERF_PROJECT_ROOT;
+    process.env.NERF_PROJECT_ROOT = root;
     try {
-      originalContent = readFileSync(agentFile, "utf-8");
-    } catch {
-      // doesn't exist
-    }
-
-    try {
-      writeFileSync(
-        agentFile,
-        JSON.stringify({ dev_name: "test-nerf-agent", dev_avatar: "🧪", dev_team: "test" }),
-        "utf-8"
-      );
-
-      const devName = resolveDevName();
-      expect(devName).toBe("test-nerf-agent");
+      expect(resolveProjectRoot()).toBe(root);
+      expect(resolveDevName()).toBeNull();
+      writeFileSync(tmpAgentFile, JSON.stringify({ dev_name: "test-nerf-agent" }), "utf-8");
+      expect(resolveDevName()).toBe("test-nerf-agent");
     } finally {
-      // Restore original or clean up
-      if (originalContent !== null) {
-        writeFileSync(agentFile, originalContent, "utf-8");
-      } else {
-        try {
-          rmSync(agentFile, { force: true });
-        } catch {
-          // ignore
-        }
-      }
+      process.env.NERF_PROJECT_ROOT = suiteRootBefore;
+      rmSync(tmpAgentFile, { force: true });
+      rmSync(root, { recursive: true, force: true });
     }
   });
 
-  test("resolveDevName returns null when no agent file exists", () => {
-    // Use a directory that won't have an agent file
-    const fakeRoot = "/tmp/nonexistent-project-root-for-test";
-    const dirHash = createHash("md5").update(fakeRoot).digest("hex");
-    const agentFile = `/tmp/claude-agent-${dirHash}.json`;
+  describe("identity resolution order (#35)", () => {
+    let root: string;
+    let tmpAgentFile: string;
 
-    // Make sure it doesn't exist
-    try {
-      rmSync(agentFile, { force: true });
-    } catch {
-      // ignore
+    beforeEach(() => {
+      root = mkdtempSync(join(tmpdir(), "nerf-ident-"));
+      tmpAgentFile = `/tmp/claude-agent-${createHash("md5").update(root).digest("hex")}.json`;
+    });
+
+    afterEach(() => {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(tmpAgentFile, { force: true });
+    });
+
+    function writeDurable(devName: string): void {
+      mkdirSync(join(root, ".claude"), { recursive: true });
+      writeFileSync(join(root, ".claude", "agent-identity.json"), JSON.stringify({ dev_name: devName }));
     }
 
-    // resolveDevName uses the real project root, not fakeRoot.
-    // So we test the null path by checking it doesn't crash when file is missing.
-    // The actual null test is implicitly covered if no agent file exists.
-    // For a stronger test, we verify the function type:
-    const result = resolveDevName();
-    expect(result === null || typeof result === "string").toBe(true);
+    test("durable .claude/agent-identity.json alone is enough (after a reboot wipes /tmp)", () => {
+      writeDurable("durable-agent");
+      expect(resolveDevName(root)).toBe("durable-agent");
+    });
+
+    test("durable wins over a disagreeing /tmp copy", () => {
+      writeDurable("durable-agent");
+      writeFileSync(tmpAgentFile, JSON.stringify({ dev_name: "stale-tmp-agent" }));
+      expect(resolveDevName(root)).toBe("durable-agent");
+    });
+
+    test("falls back to the /tmp copy when there is no durable file", () => {
+      writeFileSync(tmpAgentFile, JSON.stringify({ dev_name: "tmp-agent" }));
+      expect(resolveDevName(root)).toBe("tmp-agent");
+    });
+
+    test("neither file → null", () => {
+      expect(resolveDevName(root)).toBeNull();
+    });
+
+    test("an empty dev_name is null, not an empty-string statusline path", () => {
+      writeDurable("");
+      expect(resolveDevName(root)).toBeNull();
+    });
   });
 
   test("resolveStatuslineFile returns path or null", () => {

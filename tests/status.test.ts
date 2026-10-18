@@ -1,39 +1,60 @@
 /**
  * Unit tests for status.ts — nerf_status tool handler.
  *
- * Tests use real filesystem operations with temp config files.
- * No mocking of internal modules. Tests that exercise the context-usage
- * shell-out path inject a fake analyzer via NERF_ANALYZER_PATH (same
- * pattern as tests/context.test.ts).
+ * Tests use real filesystem operations with temp config files and a temp
+ * CLAUDE_CONTEXT_STATE_DIR holding readings in the statusline's persisted
+ * format. No mocking of internal modules.
+ *
+ * The old #15 regression (analyzer percent vs local ouch denominator) is gone
+ * with the analyzer: the reading is the harness's own window-aware percentage,
+ * and darts are percentages of the same window.
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync, chmodSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir, homedir } from "node:os";
-import { configPath, writeConfig, DEFAULTS, type NerfConfig } from "../config.ts";
-import { handleStatus, formatTokenCount } from "../status.ts";
+import { tmpdir } from "node:os";
+import { configPath, writeConfig, type NerfConfig } from "../config.ts";
+import { handleStatus, formatAge, formatContextLine } from "../status.ts";
 
 describe("nerf_status", () => {
   let testSessionId: string;
+  let stateDir: string;
+  let originalStateDir: string | undefined;
 
   beforeEach(() => {
     testSessionId = `test-status-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    // Set env so resolveSessionId() returns our test session ID
     process.env.CLAUDE_SESSION_ID = testSessionId;
+    stateDir = mkdtempSync(join(tmpdir(), "nerf-status-state-"));
+    originalStateDir = process.env.CLAUDE_CONTEXT_STATE_DIR;
+    process.env.CLAUDE_CONTEXT_STATE_DIR = stateDir;
   });
 
   afterEach(() => {
     delete process.env.CLAUDE_SESSION_ID;
+    if (originalStateDir === undefined) delete process.env.CLAUDE_CONTEXT_STATE_DIR;
+    else process.env.CLAUDE_CONTEXT_STATE_DIR = originalStateDir;
+    rmSync(stateDir, { recursive: true, force: true });
     const path = configPath(testSessionId);
-    try { rmSync(path, { force: true }); } catch { /* ignore */ }
-    try { rmSync(`${path}.tmp`, { force: true }); } catch { /* ignore */ }
+    rmSync(path, { force: true });
+    rmSync(`${path}.tmp`, { force: true });
   });
+
+  function persistReading(sessionId: string, remaining: number, ageSec = 0): void {
+    writeFileSync(
+      join(stateDir, `${sessionId}.json`),
+      JSON.stringify({
+        session_id: sessionId,
+        remaining_percentage: remaining,
+        ts: Math.floor(Date.now() / 1000) - ageSec,
+      }),
+    );
+  }
 
   test("status returns formatted output with known config", async () => {
     const config: NerfConfig = {
       mode: "ultraviolence",
-      darts: { soft: 100_000, hard: 130_000, ouch: 180_000 },
+      darts_pct: { soft: 40, hard: 55, ouch: 70 },
       session_id: testSessionId,
     };
     writeConfig(testSessionId, config);
@@ -42,247 +63,101 @@ describe("nerf_status", () => {
 
     expect(result).toContain("nerf — ultraviolence");
     expect(result).toContain("auto-crystallize");
-    expect(result).toContain("Darts:");
-    expect(result).toContain("soft   100k   warning");
-    expect(result).toContain("hard   130k   crystallize");
-    expect(result).toContain("ouch   180k   compact or die");
+    expect(result).toContain("soft   40%   warning");
+    expect(result).toContain("hard   55%   crystallize");
+    expect(result).toContain("ouch   70%   compact or die");
   });
 
   test("status shows defaults when no config exists", async () => {
-    // No config file written — should use defaults
     const result = await handleStatus({});
 
     expect(result).toContain("nerf — hurt-me-plenty");
-    expect(result).toContain("prompted crystallization");
-    expect(result).toContain("soft   120k   warning");
-    expect(result).toContain("hard   150k   crystallize");
-    expect(result).toContain("ouch   200k   compact or die");
+    expect(result).toContain("soft   51%   warning");
+    expect(result).toContain("hard   63%   crystallize");
+    expect(result).toContain("ouch   85%   compact or die");
   });
 
-  test("status includes context usage as unavailable when module missing", async () => {
-    // context.ts doesn't exist yet (#223), so usage should be unavailable
+  test("status shows a real reading in percent used and remaining", async () => {
+    persistReading(testSessionId, 42);
+
     const result = await handleStatus({});
 
-    expect(result).toContain("Context: unavailable");
+    expect(result).toContain("Context: 58% used (42% remaining), as of");
+  });
+
+  test("status says why when there is no reading — never a number", async () => {
+    const result = await handleStatus({});
+
+    expect(result).toContain("Context: unknown — no reading for this session");
+    expect(result).toContain(join(stateDir, `${testSessionId}.json`));
+  });
+
+  test("status says why when the reading is stale", async () => {
+    persistReading(testSessionId, 42, 7200);
+
+    const result = await handleStatus({});
+
+    expect(result).toContain("Context: unknown — reading stale since");
   });
 
   test("status uses explicit session_id param over env var", async () => {
     const overrideId = `override-status-${Date.now()}`;
-    // Write config to the override session, not the env session
-    const config: NerfConfig = {
+    writeConfig(overrideId, {
       mode: "ultraviolence",
-      darts: { soft: 50_000, hard: 75_000, ouch: 100_000 },
+      darts_pct: { soft: 30, hard: 45, ouch: 60 },
       session_id: overrideId,
-    };
-    writeConfig(overrideId, config);
+    });
+    persistReading(overrideId, 90);
 
     const result = await handleStatus({ session_id: overrideId });
 
     expect(result).toContain("nerf — ultraviolence");
-    expect(result).toContain("ouch   100k   compact or die");
+    expect(result).toContain("ouch   60%   compact or die");
+    expect(result).toContain("Context: 10% used");
 
-    // Clean up
-    try { rmSync(configPath(overrideId), { force: true }); } catch { /* ignore */ }
+    rmSync(configPath(overrideId), { force: true });
   });
 
   test("status output format matches spec", async () => {
-    const config: NerfConfig = {
+    writeConfig(testSessionId, {
       mode: "not-too-rough",
-      darts: { soft: 80_000, hard: 100_000, ouch: 150_000 },
+      darts_pct: { soft: 40, hard: 55, ouch: 70 },
       session_id: testSessionId,
-    };
-    writeConfig(testSessionId, config);
+    });
 
-    const result = await handleStatus({});
-    const lines = result.split("\n");
+    const lines = (await handleStatus({})).split("\n");
 
-    // First line: mode header
     expect(lines[0]).toMatch(/^nerf — not-too-rough \(/);
-    // Empty separator line
     expect(lines[1]).toBe("");
-    // Darts header
-    expect(lines[2]).toBe("Darts:");
-    // Dart lines
+    expect(lines[2]).toBe("Darts (percent of context window used):");
     expect(lines[3]).toContain("soft");
     expect(lines[4]).toContain("hard");
     expect(lines[5]).toContain("ouch");
-    // Empty separator
     expect(lines[6]).toBe("");
-    // Context line
     expect(lines[7]).toMatch(/^Context:/);
   });
 });
 
-describe("nerf_status context line — issue #15 regression", () => {
-  // These tests exercise the real shell-out path through context.ts via the
-  // NERF_ANALYZER_PATH env var override, then assert that handleStatus renders
-  // the percent against the LOCAL nerf config's ouch — not against whatever
-  // `limit`/`percent` the analyzer returned. This is the bug argus surfaced
-  // immediately after #13 shipped: with lifted darts, the analyzer's percent
-  // (computed against its hardcoded global default) no longer matches the
-  // displayed denominator.
-  let testSessionId: string;
-  let tempDir: string;
-  let fakeProjectDir: string;
-  let transcriptPath: string;
-  let originalAnalyzerPath: string | undefined;
+describe("formatContextLine", () => {
+  test("rounds used and remaining", () => {
+    expect(
+      formatContextLine({ ok: true, usedPercent: 57.6, remainingPercent: 42.4, ts: 0, ageSec: 5 }),
+    ).toBe("Context: 58% used (42% remaining), as of 5s ago");
+  });
 
-  /**
-   * Helper: write a fake analyzer script and a fake transcript so getContextUsage
-   * resolves to a controlled ContextUsage value. Returns the analyzer path so
-   * the caller can set NERF_ANALYZER_PATH.
-   */
-  function installFakeAnalyzer(analyzerJson: string): string {
-    const fakeAnalyzer = join(tempDir, "fake-analyzer.sh");
-    writeFileSync(
-      fakeAnalyzer,
-      `#!/bin/bash
-analyze_context() {
-  cat <<'ENDJSON'
-${analyzerJson}
-ENDJSON
-}
-`,
+  test("passes the failure detail through", () => {
+    expect(formatContextLine({ ok: false, reason: "unreadable", detail: "bad json" })).toBe(
+      "Context: unknown — bad json",
     );
-    chmodSync(fakeAnalyzer, 0o755);
-
-    // Fake transcript at the path findTranscript() searches.
-    mkdirSync(fakeProjectDir, { recursive: true });
-    writeFileSync(
-      transcriptPath,
-      JSON.stringify({
-        type: "assistant",
-        message: { model: "claude-sonnet-4-20250514", usage: { input_tokens: 1 } },
-      }) + "\n",
-    );
-
-    return fakeAnalyzer;
-  }
-
-  beforeEach(() => {
-    testSessionId = `test-status-pct-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    process.env.CLAUDE_SESSION_ID = testSessionId;
-    tempDir = mkdtempSync(join(tmpdir(), "nerf-status-pct-"));
-    // Use the unique testSessionId as part of the directory name so concurrent
-    // or rapid sequential test runs cannot collide on the same path.
-    fakeProjectDir = join(homedir(), ".claude", "projects", `-tmp-${testSessionId}`);
-    transcriptPath = join(fakeProjectDir, `${testSessionId}.jsonl`);
-    originalAnalyzerPath = process.env.NERF_ANALYZER_PATH;
-  });
-
-  afterEach(() => {
-    delete process.env.CLAUDE_SESSION_ID;
-    if (originalAnalyzerPath === undefined) {
-      delete process.env.NERF_ANALYZER_PATH;
-    } else {
-      process.env.NERF_ANALYZER_PATH = originalAnalyzerPath;
-    }
-    try { rmSync(configPath(testSessionId), { force: true }); } catch { /* ignore */ }
-    try { rmSync(`${configPath(testSessionId)}.tmp`, { force: true }); } catch { /* ignore */ }
-    try { rmSync(transcriptPath, { force: true }); } catch { /* ignore */ }
-    try { rmSync(fakeProjectDir, { recursive: true, force: true }); } catch { /* ignore */ }
-    try { rmSync(tempDir, { recursive: true, force: true }); } catch { /* ignore */ }
-  });
-
-  test("percent uses local config.darts.ouch as denominator, not analyzer's stale percent", async () => {
-    // argus's exact case: lifted nerf ouch to 750k, context at 366k.
-    // Analyzer (oblivious to lifted darts) reports its own stale percent
-    // computed against its hardcoded 200k limit: 366/200 = 183%.
-    // The displayed line should ignore the analyzer's percent and compute
-    // its own against the lifted ouch: 366/750 = 49%.
-    const config: NerfConfig = {
-      mode: "hurt-me-plenty",
-      darts: { soft: 500_000, hard: 650_000, ouch: 750_000 },
-      session_id: testSessionId,
-    };
-    writeConfig(testSessionId, config);
-
-    const analyzerPath = installFakeAnalyzer(`{
-  "tokens": { "total": 366000 },
-  "limit": 200000,
-  "percent": 183.0,
-  "action": "compact"
-}`);
-    process.env.NERF_ANALYZER_PATH = analyzerPath;
-
-    const result = await handleStatus({});
-
-    // Numerator + denominator come from local config (366k context vs 750k ouch)
-    expect(result).toContain("Context: 366k/750k");
-    // Percent must be locally computed: 366/750 ≈ 0.488 → 49%
-    expect(result).toContain("(49%)");
-    // Must NOT carry through the analyzer's stale percent
-    expect(result).not.toContain("183");
-  });
-
-  test("percent computes against local ouch even when context is below the analyzer limit", async () => {
-    // Inverse case: nerf ouch lifted to 500k, context at 80k. Analyzer's
-    // percent (80/200 = 40%) and the correct percent (80/500 = 16%) differ
-    // and we should display the latter.
-    const config: NerfConfig = {
-      mode: "hurt-me-plenty",
-      darts: { soft: 300_000, hard: 400_000, ouch: 500_000 },
-      session_id: testSessionId,
-    };
-    writeConfig(testSessionId, config);
-
-    const analyzerPath = installFakeAnalyzer(`{
-  "tokens": { "total": 80000 },
-  "limit": 200000,
-  "percent": 40.0,
-  "action": "none"
-}`);
-    process.env.NERF_ANALYZER_PATH = analyzerPath;
-
-    const result = await handleStatus({});
-
-    expect(result).toContain("Context: 80k/500k");
-    expect(result).toContain("(16%)");
-    expect(result).not.toContain("(40%)");
-  });
-
-  test("percent renders correctly when context exceeds local ouch", async () => {
-    // Context above ouch should display >100% (the user is in the ouch zone).
-    // Lock in this behavior so the fix doesn't accidentally cap at 100.
-    const config: NerfConfig = {
-      mode: "ultraviolence",
-      darts: { soft: 120_000, hard: 150_000, ouch: 200_000 },
-      session_id: testSessionId,
-    };
-    writeConfig(testSessionId, config);
-
-    const analyzerPath = installFakeAnalyzer(`{
-  "tokens": { "total": 240000 },
-  "limit": 200000,
-  "percent": 120.0,
-  "action": "compact"
-}`);
-    process.env.NERF_ANALYZER_PATH = analyzerPath;
-
-    const result = await handleStatus({});
-
-    expect(result).toContain("Context: 240k/200k");
-    // 240/200 = 120% — happens to match the analyzer in this case (same
-    // limit as the local config), but the assertion is on the value our
-    // code computes, not the value we forwarded.
-    expect(result).toContain("(120%)");
   });
 });
 
-describe("formatTokenCount", () => {
-  test("formats large numbers with k suffix", () => {
-    expect(formatTokenCount(120_000)).toBe("120k");
-    expect(formatTokenCount(150_000)).toBe("150k");
-    expect(formatTokenCount(200_000)).toBe("200k");
-  });
-
-  test("rounds to nearest k", () => {
-    expect(formatTokenCount(120_500)).toBe("121k");
-    expect(formatTokenCount(99_499)).toBe("99k");
-    expect(formatTokenCount(1_000)).toBe("1k");
-  });
-
-  test("handles zero", () => {
-    expect(formatTokenCount(0)).toBe("0k");
+describe("formatAge", () => {
+  test("seconds, minutes, hours", () => {
+    expect(formatAge(0)).toBe("0s");
+    expect(formatAge(59)).toBe("59s");
+    expect(formatAge(60)).toBe("1m");
+    expect(formatAge(3599)).toBe("59m");
+    expect(formatAge(3600)).toBe("1h");
   });
 });

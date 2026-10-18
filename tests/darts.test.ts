@@ -1,20 +1,24 @@
 /**
  * Unit tests for darts.ts — nerf_darts tool handler.
  *
+ * Darts are percentages of the context window used (#32), integers in 1-99.
  * Tests use real filesystem operations with temp config files.
  * No mocking of internal modules.
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import {
   configPath,
   readConfig,
   writeConfig,
-  DEFAULTS,
   type NerfConfig,
 } from "../config.ts";
 import { handleDarts } from "../darts.ts";
+import { computeIndicator } from "../indicator.ts";
+import { getContextReading } from "../context.ts";
 
 describe("nerf_darts", () => {
   let testSessionId: string;
@@ -27,15 +31,15 @@ describe("nerf_darts", () => {
   afterEach(() => {
     delete process.env.CLAUDE_SESSION_ID;
     const path = configPath(testSessionId);
-    try { rmSync(path, { force: true }); } catch { /* ignore */ }
-    try { rmSync(`${path}.tmp`, { force: true }); } catch { /* ignore */ }
+    rmSync(path, { force: true });
+    rmSync(`${path}.tmp`, { force: true });
   });
 
   test("darts uses explicit session_id param over env var", async () => {
     const overrideId = `override-darts-${Date.now()}`;
     const config: NerfConfig = {
       mode: "hurt-me-plenty",
-      darts: { soft: 50_000, hard: 75_000, ouch: 100_000 },
+      darts_pct: { soft: 30, hard: 45, ouch: 60 },
       session_id: overrideId,
     };
     writeConfig(overrideId, config);
@@ -43,161 +47,84 @@ describe("nerf_darts", () => {
     delete process.env.CLAUDE_SESSION_ID;
     const result = await handleDarts({ session_id: overrideId });
 
-    expect(result).toContain("soft   50k   warning");
-    expect(result).toContain("ouch   100k   compact or die");
+    expect(result).toContain("soft   30%   warning");
+    expect(result).toContain("ouch   60%   compact or die");
 
-    try { rmSync(configPath(overrideId), { force: true }); } catch { /* ignore */ }
+    rmSync(configPath(overrideId), { force: true });
   });
 
-  test("darts returns current positions", async () => {
+  test("darts returns current positions (defaults)", async () => {
     const result = await handleDarts({});
 
-    expect(result).toContain("Darts:");
-    expect(result).toContain("soft   120k   warning");
-    expect(result).toContain("hard   150k   crystallize");
-    expect(result).toContain("ouch   200k   compact or die");
-  });
-
-  test("darts returns current positions from existing config", async () => {
-    const config: NerfConfig = {
-      mode: "hurt-me-plenty",
-      darts: { soft: 80_000, hard: 100_000, ouch: 150_000 },
-      session_id: testSessionId,
-    };
-    writeConfig(testSessionId, config);
-
-    const result = await handleDarts({});
-
-    expect(result).toContain("soft   80k   warning");
-    expect(result).toContain("hard   100k   crystallize");
-    expect(result).toContain("ouch   150k   compact or die");
+    expect(result).toContain("Darts (percent of context window used):");
+    expect(result).toContain("soft   51%   warning");
+    expect(result).toContain("hard   63%   crystallize");
+    expect(result).toContain("ouch   85%   compact or die");
   });
 
   test("darts sets valid thresholds", async () => {
-    const result = await handleDarts({
-      soft: 90_000,
-      hard: 120_000,
-      ouch: 160_000,
-    });
+    const result = await handleDarts({ soft: 40, hard: 60, ouch: 80 });
 
-    expect(result).toContain("soft   90k   warning");
-    expect(result).toContain("hard   120k   crystallize");
-    expect(result).toContain("ouch   160k   compact or die");
+    expect(result).toContain("soft   40%   warning");
+    expect(result).toContain("hard   60%   crystallize");
+    expect(result).toContain("ouch   80%   compact or die");
 
-    // Verify config was actually written
     const config = readConfig(testSessionId);
-    expect(config.darts.soft).toBe(90_000);
-    expect(config.darts.hard).toBe(120_000);
-    expect(config.darts.ouch).toBe(160_000);
+    expect(config.darts_pct).toEqual({ soft: 40, hard: 60, ouch: 80 });
   });
 
   test("darts rejects bad ordering — soft >= hard", async () => {
-    const result = await handleDarts({
-      soft: 150_000,
-      hard: 100_000,
-      ouch: 200_000,
-    });
-
+    const result = await handleDarts({ soft: 70, hard: 60, ouch: 80 });
     expect(result).toContain("Error");
-    expect(result).toContain("soft");
-    expect(result).toContain("hard");
+    expect(result).toContain("soft (70%) must be less than hard (60%)");
   });
 
   test("darts rejects bad ordering — hard >= ouch", async () => {
-    const result = await handleDarts({
-      soft: 90_000,
-      hard: 200_000,
-      ouch: 150_000,
-    });
-
+    const result = await handleDarts({ soft: 40, hard: 90, ouch: 80 });
     expect(result).toContain("Error");
-    expect(result).toContain("hard");
-    expect(result).toContain("ouch");
+    expect(result).toContain("hard (90%) must be less than ouch (80%)");
   });
 
   test("darts rejects bad ordering — soft == hard", async () => {
-    const result = await handleDarts({
-      soft: 100_000,
-      hard: 100_000,
-      ouch: 200_000,
-    });
-
+    const result = await handleDarts({ soft: 60, hard: 60, ouch: 80 });
     expect(result).toContain("Error");
     expect(result).toContain("soft");
-    expect(result).toContain("hard");
   });
 
-  test("darts rejects negative values", async () => {
-    const result = await handleDarts({
-      soft: -1,
-      hard: 100_000,
-      ouch: 200_000,
-    });
-
-    expect(result).toContain("Error");
-    expect(result).toContain("positive integer");
+  test("darts rejects out-of-range values: 0, 100, negative, old token counts", async () => {
+    for (const bad of [0, 100, -1, 120_000]) {
+      const result = await handleDarts({ soft: bad, hard: 60, ouch: 80 });
+      expect(result).toContain("Error");
+      expect(result).toContain("integer percentage from 1 to 99");
+    }
   });
 
-  test("darts rejects zero values", async () => {
-    const result = await handleDarts({
-      soft: 0,
-      hard: 100_000,
-      ouch: 200_000,
-    });
-
-    expect(result).toContain("Error");
-    expect(result).toContain("positive integer");
-  });
-
-  test("darts rejects partial args — only soft", async () => {
-    const result = await handleDarts({ soft: 100_000 });
-
-    expect(result).toContain("Error");
-    expect(result).toContain("all three");
-  });
-
-  test("darts rejects partial args — only soft and hard", async () => {
-    const result = await handleDarts({ soft: 100_000, hard: 150_000 });
-
-    expect(result).toContain("Error");
-    expect(result).toContain("all three");
-  });
-
-  test("darts rejects partial args — only ouch", async () => {
-    const result = await handleDarts({ ouch: 200_000 });
-
-    expect(result).toContain("Error");
-    expect(result).toContain("all three");
+  test("darts rejects partial args", async () => {
+    for (const partial of [{ soft: 40 }, { soft: 40, hard: 60 }, { ouch: 80 }]) {
+      const result = await handleDarts(partial);
+      expect(result).toContain("Error");
+      expect(result).toContain("all three");
+    }
   });
 
   test("darts rejects non-integer values", async () => {
-    const result = await handleDarts({
-      soft: 100_000.5,
-      hard: 150_000,
-      ouch: 200_000,
-    });
-
+    const result = await handleDarts({ soft: 40.5, hard: 60, ouch: 80 });
     expect(result).toContain("Error");
-    expect(result).toContain("positive integer");
+    expect(result).toContain("integer percentage");
   });
 
   test("darts preserves mode when setting thresholds", async () => {
-    const config: NerfConfig = {
+    writeConfig(testSessionId, {
       mode: "ultraviolence",
-      darts: { soft: 120_000, hard: 150_000, ouch: 200_000 },
+      darts_pct: { soft: 51, hard: 63, ouch: 85 },
       session_id: testSessionId,
-    };
-    writeConfig(testSessionId, config);
-
-    await handleDarts({
-      soft: 90_000,
-      hard: 120_000,
-      ouch: 160_000,
     });
+
+    await handleDarts({ soft: 40, hard: 60, ouch: 80 });
 
     const updated = readConfig(testSessionId);
     expect(updated.mode).toBe("ultraviolence");
-    expect(updated.darts.soft).toBe(90_000);
+    expect(updated.darts_pct.soft).toBe(40);
   });
 
   // Regression: #13 — MCP clients that stringify numeric tool-call args
@@ -205,126 +132,116 @@ describe("nerf_darts", () => {
   // because `params.soft as number` is a TS compile-time cast with no runtime
   // coercion. The handler must coerce string-form numbers before validating.
   test("darts accepts string-valued numeric inputs and normalizes to integers", async () => {
-    const result = await handleDarts({
-      soft: "90000",
-      hard: "120000",
-      ouch: "160000",
-    });
+    const result = await handleDarts({ soft: "40", hard: "60", ouch: "80" });
 
     expect(result).not.toContain("Error");
-    expect(result).toContain("soft   90k   warning");
-    expect(result).toContain("hard   120k   crystallize");
-    expect(result).toContain("ouch   160k   compact or die");
+    expect(result).toContain("soft   40%   warning");
 
     // Config must hold native numbers, not strings — downstream consumers
-    // (crystallizer hook, statusline indicator) rely on integer math.
+    // (the statusline indicator) rely on numeric comparison.
     const config = readConfig(testSessionId);
-    expect(config.darts.soft).toBe(90_000);
-    expect(config.darts.hard).toBe(120_000);
-    expect(config.darts.ouch).toBe(160_000);
-    expect(typeof config.darts.soft).toBe("number");
-    expect(typeof config.darts.hard).toBe("number");
-    expect(typeof config.darts.ouch).toBe("number");
+    expect(config.darts_pct).toEqual({ soft: 40, hard: 60, ouch: 80 });
+    expect(typeof config.darts_pct.soft).toBe("number");
   });
 
   test("darts accepts a mix of string and number inputs", async () => {
-    const result = await handleDarts({
-      soft: "90000",
-      hard: 120_000,
-      ouch: "160000",
-    });
-
+    const result = await handleDarts({ soft: "40", hard: 60, ouch: "80" });
     expect(result).not.toContain("Error");
-    expect(result).toContain("soft   90k   warning");
-    expect(result).toContain("hard   120k   crystallize");
-    expect(result).toContain("ouch   160k   compact or die");
+    expect(result).toContain("hard   60%   crystallize");
   });
 
-  test("darts rejects non-numeric string inputs with a clear error", async () => {
-    const result = await handleDarts({
-      soft: "abc",
-      hard: 120_000,
-      ouch: 160_000,
-    });
-
-    expect(result).toContain("Error");
-    expect(result).toContain("soft");
-  });
-
-  test("darts rejects suffix-notation strings like '500k' — suffix parsing is client-side", async () => {
-    const result = await handleDarts({
-      soft: "500k",
-      hard: 650_000,
-      ouch: 750_000,
-    });
-
-    expect(result).toContain("Error");
-    expect(result).toContain("soft");
+  test("darts rejects non-numeric and suffix-notation strings", async () => {
+    for (const bad of ["abc", "50%"]) {
+      const result = await handleDarts({ soft: bad, hard: 60, ouch: 80 });
+      expect(result).toContain("Error");
+      expect(result).toContain("soft");
+    }
   });
 
   test("darts rejects string values that parse to non-integer floats", async () => {
-    const result = await handleDarts({
-      soft: "90000.5",
-      hard: 120_000,
-      ouch: 160_000,
-    });
-
+    const result = await handleDarts({ soft: "40.5", hard: 60, ouch: 80 });
     expect(result).toContain("Error");
-    expect(result).toContain("positive integer");
+    expect(result).toContain("integer percentage");
   });
 
   test("darts rejects string zero and negative values", async () => {
-    const zero = await handleDarts({
-      soft: "0",
-      hard: 120_000,
-      ouch: 160_000,
-    });
-    expect(zero).toContain("Error");
-    expect(zero).toContain("positive integer");
-
-    const neg = await handleDarts({
-      soft: "-100",
-      hard: 120_000,
-      ouch: 160_000,
-    });
-    expect(neg).toContain("Error");
-    expect(neg).toContain("positive integer");
+    for (const bad of ["0", "-10"]) {
+      const result = await handleDarts({ soft: bad, hard: 60, ouch: 80 });
+      expect(result).toContain("Error");
+      expect(result).toContain("integer percentage");
+    }
   });
 
   test("darts treats explicit null as 'not provided' and triggers partial-args error", async () => {
-    // JSON allows explicit null distinct from missing field. The handler's
-    // "all or none" semantic should still apply when null appears as a
-    // sentinel for absence — emit the partial-args error, not a misleading
-    // "got null" type error.
-    const result = await handleDarts({
-      soft: null,
-      hard: 120_000,
-      ouch: 160_000,
-    });
-
+    const result = await handleDarts({ soft: null, hard: 60, ouch: 80 });
     expect(result).toContain("Error");
     expect(result).toContain("all three");
   });
 
   test("darts accepts JSON-compliant scientific notation strings", async () => {
-    // Number("9e4") === 90000, Number.isInteger(90000) === true. This is a
-    // permissive but predictable side effect of using `Number()` for coercion;
-    // locked in via this test so a future stricter parser doesn't silently
+    // Number("4e1") === 40. A permissive but predictable side effect of using
+    // `Number()` for coercion; locked in so a stricter parser doesn't silently
     // regress it.
-    const result = await handleDarts({
-      soft: "9e4",
-      hard: "1.2e5",
-      ouch: "1.6e5",
-    });
-
+    const result = await handleDarts({ soft: "4e1", hard: "6e1", ouch: "8e1" });
     expect(result).not.toContain("Error");
-    expect(result).toContain("soft   90k   warning");
-    expect(result).toContain("hard   120k   crystallize");
-    expect(result).toContain("ouch   160k   compact or die");
+    expect(readConfig(testSessionId).darts_pct).toEqual({ soft: 40, hard: 60, ouch: 80 });
+  });
+});
 
-    const config = readConfig(testSessionId);
-    expect(config.darts.soft).toBe(90_000);
-    expect(config.darts.hard).toBe(120_000);
-    expect(config.darts.ouch).toBe(160_000);
+/**
+ * Percentage darts are correct on any window. The same session state — 70% of
+ * the window used — must land in the same zone whether the window is 200k
+ * tokens (140k used) or 1M (700k used). The persisted reading carries only
+ * the window-aware percentage, which is exactly why darts are percentages.
+ */
+describe("percentage darts", () => {
+  let stateDir: string;
+  let original: string | undefined;
+
+  beforeEach(() => {
+    stateDir = mkdtempSync(join(tmpdir(), "nerf-darts-window-"));
+    original = process.env.CLAUDE_CONTEXT_STATE_DIR;
+    process.env.CLAUDE_CONTEXT_STATE_DIR = stateDir;
+  });
+
+  afterEach(() => {
+    if (original === undefined) delete process.env.CLAUDE_CONTEXT_STATE_DIR;
+    else process.env.CLAUDE_CONTEXT_STATE_DIR = original;
+    rmSync(stateDir, { recursive: true, force: true });
+  });
+
+  const config: NerfConfig = {
+    mode: "hurt-me-plenty",
+    darts_pct: { soft: 51, hard: 63, ouch: 85 },
+    session_id: "window",
+  };
+
+  for (const { window, usedTokens } of [
+    { window: 200_000, usedTokens: 140_000 },
+    { window: 1_000_000, usedTokens: 700_000 },
+  ]) {
+    test(`thresholds evaluated as percent-of-window on a ${window / 1000}k window`, () => {
+      const sid = `window-${window}`;
+      const remaining = 100 - (usedTokens / window) * 100;
+      writeFileSync(
+        join(stateDir, `${sid}.json`),
+        JSON.stringify({ session_id: sid, remaining_percentage: remaining, ts: Math.floor(Date.now() / 1000) }),
+      );
+
+      const state = computeIndicator(getContextReading(sid), config);
+      expect(state.level).toBe("hard");
+      expect(state.text).toContain("70%");
+    });
+  }
+
+  test("a 1M session at 20% used is healthy (the old 200k token ouch called it critical)", () => {
+    // Documents the bug #32 fixes: under the old absolute darts (ouch 200k
+    // tokens), a 1M session with 200k tokens used was already "compact or die".
+    const sid = "window-1m-20pct";
+    writeFileSync(
+      join(stateDir, `${sid}.json`),
+      JSON.stringify({ session_id: sid, remaining_percentage: 80, ts: Math.floor(Date.now() / 1000) }),
+    );
+    expect(computeIndicator(getContextReading(sid), config).level).toBe("none");
   });
 });

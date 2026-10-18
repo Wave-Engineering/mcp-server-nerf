@@ -46,7 +46,7 @@ describe("nerf_mode", () => {
     const overrideId = `override-mode-${Date.now()}`;
     const config: NerfConfig = {
       mode: "ultraviolence",
-      darts: { soft: 120_000, hard: 150_000, ouch: 200_000 },
+      darts_pct: { soft: 51, hard: 63, ouch: 85 },
       session_id: overrideId,
     };
     writeConfig(overrideId, config);
@@ -63,7 +63,7 @@ describe("nerf_mode", () => {
   test("mode returns current mode from existing config", async () => {
     const config: NerfConfig = {
       mode: "ultraviolence",
-      darts: { soft: 120_000, hard: 150_000, ouch: 200_000 },
+      darts_pct: { soft: 51, hard: 63, ouch: 85 },
       session_id: testSessionId,
     };
     writeConfig(testSessionId, config);
@@ -142,7 +142,7 @@ describe("nerf_mode", () => {
   test("mode preserves existing dart config when setting mode", async () => {
     const config: NerfConfig = {
       mode: "hurt-me-plenty",
-      darts: { soft: 80_000, hard: 100_000, ouch: 150_000 },
+      darts_pct: { soft: 40, hard: 55, ouch: 70 },
       session_id: testSessionId,
     };
     writeConfig(testSessionId, config);
@@ -152,8 +152,8 @@ describe("nerf_mode", () => {
     const updated = readConfig(testSessionId);
     expect(updated.mode).toBe("ultraviolence");
     // Darts should be preserved
-    expect(updated.darts.soft).toBe(80_000);
-    expect(updated.darts.hard).toBe(100_000);
-    expect(updated.darts.ouch).toBe(150_000);
+    expect(updated.darts_pct.soft).toBe(40);
+    expect(updated.darts_pct.hard).toBe(55);
+    expect(updated.darts_pct.ouch).toBe(70);
   });
 });

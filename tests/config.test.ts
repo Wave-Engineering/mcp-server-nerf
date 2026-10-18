@@ -6,15 +6,15 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import {
   readConfig,
   writeConfig,
   configPath,
   DEFAULTS,
   MODE_MAP,
+  SOFT_RATIO,
+  HARD_RATIO,
   type NerfConfig,
 } from "../config.ts";
 
@@ -31,16 +31,8 @@ describe("config", () => {
 
   afterEach(() => {
     const path = configPath(testSessionId);
-    try {
-      rmSync(path, { force: true });
-    } catch {
-      // ignore
-    }
-    try {
-      rmSync(`${path}.tmp`, { force: true });
-    } catch {
-      // ignore
-    }
+    rmSync(path, { force: true });
+    rmSync(`${path}.tmp`, { force: true });
   });
 
   test("configPath returns correct path", () => {
@@ -50,16 +42,14 @@ describe("config", () => {
   test("readConfig returns defaults when no file exists", () => {
     const config = readConfig(testSessionId);
     expect(config.mode).toBe(DEFAULTS.mode);
-    expect(config.darts.soft).toBe(DEFAULTS.darts.soft);
-    expect(config.darts.hard).toBe(DEFAULTS.darts.hard);
-    expect(config.darts.ouch).toBe(DEFAULTS.darts.ouch);
+    expect(config.darts_pct).toEqual(DEFAULTS.darts_pct);
     expect(config.session_id).toBe(testSessionId);
   });
 
-  test("writeConfig creates a valid JSON file", () => {
+  test("writeConfig creates a valid JSON file under darts_pct", () => {
     const config: NerfConfig = {
       mode: "ultraviolence",
-      darts: { soft: 100_000, hard: 130_000, ouch: 180_000 },
+      darts_pct: { soft: 40, hard: 55, ouch: 70 },
       session_id: testSessionId,
     };
     writeConfig(testSessionId, config);
@@ -67,65 +57,75 @@ describe("config", () => {
     const path = configPath(testSessionId);
     expect(existsSync(path)).toBe(true);
 
-    const raw = readFileSync(path, "utf-8");
-    const parsed = JSON.parse(raw);
+    const parsed = JSON.parse(readFileSync(path, "utf-8"));
     expect(parsed.mode).toBe("ultraviolence");
-    expect(parsed.darts.soft).toBe(100_000);
+    expect(parsed.darts_pct.soft).toBe(40);
+    // The statusline reads `darts` as token counts; it must never see percentages there.
+    expect(parsed.darts).toBeUndefined();
   });
 
   test("readConfig round-trips with writeConfig", () => {
     const config: NerfConfig = {
       mode: "not-too-rough",
-      darts: { soft: 80_000, hard: 100_000, ouch: 150_000 },
+      darts_pct: { soft: 30, hard: 50, ouch: 80 },
       session_id: testSessionId,
     };
     writeConfig(testSessionId, config);
-    const read = readConfig(testSessionId);
-    expect(read).toEqual(config);
+    expect(readConfig(testSessionId)).toEqual(config);
   });
 
   test("readConfig merges partial config with defaults", () => {
-    // Write a partial config (missing darts.hard and mode)
-    const path = configPath(testSessionId);
     const partial = {
-      darts: { soft: 90_000, ouch: 170_000 },
+      darts_pct: { soft: 45, ouch: 90 },
       session_id: testSessionId,
     };
-    const { writeFileSync } = require("node:fs");
-    writeFileSync(path, JSON.stringify(partial), "utf-8");
+    writeFileSync(configPath(testSessionId), JSON.stringify(partial), "utf-8");
 
     const config = readConfig(testSessionId);
-    expect(config.mode).toBe(DEFAULTS.mode); // filled from defaults
-    expect(config.darts.soft).toBe(90_000); // from file
-    expect(config.darts.hard).toBe(DEFAULTS.darts.hard); // filled from defaults
-    expect(config.darts.ouch).toBe(170_000); // from file
+    expect(config.mode).toBe(DEFAULTS.mode);
+    expect(config.darts_pct.soft).toBe(45);
+    expect(config.darts_pct.hard).toBe(DEFAULTS.darts_pct.hard);
+    expect(config.darts_pct.ouch).toBe(90);
   });
 
-  test("writeConfig is atomic (no .tmp file remains)", () => {
-    const config: NerfConfig = {
-      mode: "hurt-me-plenty",
+  test("legacy absolute darts are migrated: ignored, percentage defaults apply", () => {
+    const legacy = {
+      mode: "ultraviolence",
       darts: { soft: 120_000, hard: 150_000, ouch: 200_000 },
       session_id: testSessionId,
     };
-    writeConfig(testSessionId, config);
+    writeFileSync(configPath(testSessionId), JSON.stringify(legacy), "utf-8");
 
-    const tmpPath = `${configPath(testSessionId)}.tmp`;
-    expect(existsSync(tmpPath)).toBe(false);
+    const config = readConfig(testSessionId);
+    expect(config.mode).toBe("ultraviolence");
+    expect(config.darts_pct).toEqual(DEFAULTS.darts_pct);
+  });
+
+  test("the first write after migration drops the legacy darts key", () => {
+    writeFileSync(
+      configPath(testSessionId),
+      JSON.stringify({ darts: { soft: 1, hard: 2, ouch: 3 }, session_id: testSessionId }),
+      "utf-8",
+    );
+    writeConfig(testSessionId, readConfig(testSessionId));
+    const parsed = JSON.parse(readFileSync(configPath(testSessionId), "utf-8"));
+    expect(parsed.darts).toBeUndefined();
+    expect(parsed.darts_pct).toEqual(DEFAULTS.darts_pct);
+  });
+
+  test("writeConfig is atomic (no .tmp file remains)", () => {
+    writeConfig(testSessionId, { ...DEFAULTS, session_id: testSessionId });
+    expect(existsSync(`${configPath(testSessionId)}.tmp`)).toBe(false);
     expect(existsSync(configPath(testSessionId))).toBe(true);
   });
 
-  test("DEFAULTS match crystallizer schema shape", () => {
-    // Verify the config shape has the fields the crystallizer expects
-    expect(DEFAULTS).toHaveProperty("mode");
-    expect(DEFAULTS).toHaveProperty("darts");
-    expect(DEFAULTS).toHaveProperty("session_id");
-    expect(DEFAULTS.darts).toHaveProperty("soft");
-    expect(DEFAULTS.darts).toHaveProperty("hard");
-    expect(DEFAULTS.darts).toHaveProperty("ouch");
-    expect(typeof DEFAULTS.mode).toBe("string");
-    expect(typeof DEFAULTS.darts.soft).toBe("number");
-    expect(typeof DEFAULTS.darts.hard).toBe("number");
-    expect(typeof DEFAULTS.darts.ouch).toBe("number");
+  test("DEFAULTS are budget(85): the reseed gate's 15% remaining at ouch", () => {
+    const { soft, hard, ouch } = DEFAULTS.darts_pct;
+    expect(ouch).toBe(85);
+    expect(soft).toBe(Math.floor(ouch * SOFT_RATIO));
+    expect(hard).toBe(Math.floor(ouch * HARD_RATIO));
+    expect(soft).toBeLessThan(hard);
+    expect(hard).toBeLessThan(ouch);
   });
 
   test("MODE_MAP has correct mappings", () => {

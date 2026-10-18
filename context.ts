@@ -1,157 +1,155 @@
 /**
- * context.ts — Context usage estimation module
+ * context.ts — Context usage reading module
  *
- * Shells out to context-analyzer.sh to estimate token usage for a Claude Code
- * session. Returns { total, limit, percent } or null on any error.
+ * Reads the per-session context reading that claudecode-workflow's statusline
+ * persists (claudecode-workflow#1225). Claude Code hands ONLY the statusline
+ * the authoritative, window-aware `context_window.remaining_percentage`; the
+ * statusline writes it atomically to:
  *
- * This module is standalone — consumed by nerf_status but not wired into
- * index.ts directly.
+ *   ${CLAUDE_CONTEXT_STATE_DIR:-~/.claude/state/context}/<session_id>.json
+ *   { "session_id": "...", "remaining_percentage": 42, "ts": 1760000000 }
+ *
+ * The directory variable is the statusline's own, not a nerf test hook: both
+ * sides resolve the same path from the same variable.
+ *
+ * A missing, unreadable or stale reading is reported as such — never as a
+ * healthy zero. Before #32 a missing measurement returned null and every
+ * consumer rendered it as "under every threshold", which hid a five-month
+ * outage.
  */
 
-import { execSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { log } from "./logger.ts";
 
-export interface ContextUsage {
-  total: number;
-  limit: number;
-  percent: number;
-}
+/** A reading older than this is reported as stale rather than used. */
+export const STALE_AFTER_SEC = 3600;
 
-/** Path to the context-analyzer.sh script. */
-const ANALYZER_PATH = join(
-  homedir(),
-  ".claude",
-  "context-crystallizer",
-  "lib",
-  "context-analyzer.sh",
-);
-
-/** Directory containing Claude Code project transcript files. */
-const PROJECTS_DIR = join(homedir(), ".claude", "projects");
-
-/**
- * Locate the transcript JSONL file for a given session ID.
- *
- * Claude Code stores transcripts as `<session_id>.jsonl` under
- * `~/.claude/projects/<project-slug>/`. We search all project directories
- * for a matching file.
- *
- * Returns the absolute path or null if not found.
- */
-function findTranscript(sessionId: string): string | null {
-  if (!existsSync(PROJECTS_DIR)) {
-    return null;
-  }
-
-  const start = performance.now();
-  try {
-    // Use find to locate the transcript — same approach as cc-context
-    const result = execSync(
-      `find "${PROJECTS_DIR}" -name "${sessionId}.jsonl" -type f 2>/dev/null | head -1`,
-      { encoding: "utf-8", timeout: 5000 },
-    ).trim();
-
-    const ms = Math.round(performance.now() - start);
-    const found = result.length > 0;
-    log.debug("subprocess", { cmd: "find", exit_code: 0, ms, found });
-    return found ? result : null;
-  } catch {
-    const ms = Math.round(performance.now() - start);
-    log.debug("subprocess", { cmd: "find", exit_code: 1, ms, found: false });
-    return null;
-  }
-}
-
-/**
- * Parse the JSON output from context-analyzer.sh into a ContextUsage.
- *
- * The analyzer returns nested JSON:
- *   { tokens: { total: N }, limit: N, percent: N }
- *
- * We map tokens.total -> total.
- */
-function parseAnalyzerOutput(raw: string): ContextUsage | null {
-  try {
-    const data = JSON.parse(raw);
-
-    // Reject error responses from the analyzer
-    if (data.error) {
-      return null;
+export type ContextReading =
+  | {
+      ok: true;
+      /** Percent of the context window in use, 0-100. */
+      usedPercent: number;
+      /** Percent of the context window remaining, 0-100. */
+      remainingPercent: number;
+      /** Unix seconds when the statusline wrote the reading. */
+      ts: number;
+      /** Seconds between the reading and `now`. */
+      ageSec: number;
     }
-
-    const total = data?.tokens?.total;
-    const limit = data?.limit;
-    const percent = data?.percent;
-
-    if (typeof total !== "number" || typeof limit !== "number" || typeof percent !== "number") {
-      return null;
-    }
-
-    return { total, limit, percent };
-  } catch {
-    return null;
-  }
-}
+  | {
+      ok: false;
+      reason: "no-reading" | "unreadable" | "stale";
+      /** Human-readable explanation, safe to show in nerf_status. */
+      detail: string;
+    };
 
 /**
- * Estimate context usage for a Claude Code session.
- *
- * Shells out to context-analyzer.sh with the session's transcript path.
- * Returns { total, limit, percent } on success, or null if estimation is
- * unavailable for any reason (missing transcript, missing analyzer, parse
- * error, etc.).
- *
- * This function NEVER throws.
+ * Directory the statusline persists readings into. Resolved at call time (not
+ * module load) so HOME and CLAUDE_CONTEXT_STATE_DIR are honoured as they are
+ * when the call happens. `$HOME` comes first because that is what the bash
+ * writer expands; Bun's `os.homedir()` does not follow a changed HOME.
  */
-export async function getContextUsage(
+export function contextStateDir(): string {
+  // `||`, not `??`: like the writer's `${VAR:-default}`, an empty value means unset.
+  return (
+    process.env.CLAUDE_CONTEXT_STATE_DIR ||
+    join(process.env.HOME || homedir(), ".claude", "state", "context")
+  );
+}
+
+/** Session IDs become filenames; anything else is refused, as the writer does. */
+const SESSION_ID_RE = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * Read the persisted context reading for a session.
+ *
+ * `notBefore` (Unix seconds) rejects a reading written before that moment.
+ * The SessionStart:compact hook passes it: right after a compaction the
+ * statusline has not redrawn yet, so the newest reading on disk is the
+ * pre-compaction figure, seconds old and otherwise "fresh".
+ *
+ * `now` is injectable for tests; production callers omit it. This function
+ * NEVER throws.
+ */
+export function getContextReading(
   sessionId: string,
-): Promise<ContextUsage | null> {
-  // Resolve the analyzer script path — allow override for testing
-  const analyzerPath =
-    process.env.NERF_ANALYZER_PATH ?? ANALYZER_PATH;
-
-  // Verify the analyzer script exists
-  if (!existsSync(analyzerPath)) {
-    log.debug("subprocess", { cmd: "context-analyzer", exit_code: -1, ms: 0 }, "Analyzer script not found");
-    return null;
+  now: number = Math.floor(Date.now() / 1000),
+  notBefore?: number,
+): ContextReading {
+  if (!SESSION_ID_RE.test(sessionId)) {
+    return {
+      ok: false,
+      reason: "unreadable",
+      detail: `session id "${sessionId}" is not a valid reading filename`,
+    };
   }
 
-  // Find the transcript for this session
-  const transcript = findTranscript(sessionId);
-  if (!transcript) {
-    return null;
-  }
+  const path = join(contextStateDir(), `${sessionId}.json`);
 
-  // Shell out to the analyzer
-  // The analyzer is a bash library — source it and call analyze_context
-  const cmd = `bash -c 'source "${analyzerPath}" && analyze_context "${transcript}"'`;
-
-  // NOTE: We use Node's `execSync` here, which inherits the parent process's
-  // environment by default. If we ever migrate this call to `Bun.spawnSync`
-  // for performance, env inheritance behaves differently — Bun does NOT
-  // automatically forward runtime mutations of `process.env` to the child,
-  // so we'd need to pass `env: { ...process.env }` explicitly. Surfaced as
-  // a gotcha by the cc-workflow team during a multi-agent wave; preventive
-  // note for whoever touches this next.
-  const analyzerStart = performance.now();
+  let raw: string;
   try {
-    const raw = execSync(cmd, {
-      encoding: "utf-8",
-      timeout: 10000,
-      stdio: ["pipe", "pipe", "pipe"],
-    }).trim();
-
-    const ms = Math.round(performance.now() - analyzerStart);
-    log.info("subprocess", { cmd: "context-analyzer", exit_code: 0, ms });
-
-    return parseAnalyzerOutput(raw);
-  } catch (err: unknown) {
-    const ms = Math.round(performance.now() - analyzerStart);
-    const stderr = err instanceof Error ? err.message.slice(0, 200) : "";
-    log.warn("subprocess", { cmd: "context-analyzer", exit_code: 1, ms, stderr });
-    return null;
+    raw = readFileSync(path, "utf-8");
+  } catch {
+    log.debug("context", { path, found: false });
+    return {
+      ok: false,
+      reason: "no-reading",
+      detail: `no reading for this session at ${path} — the claudecode-workflow statusline writes it; is it installed and has it rendered?`,
+    };
   }
+
+  let data: unknown;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    return { ok: false, reason: "unreadable", detail: `${path} is not valid JSON` };
+  }
+
+  const remaining = (data as { remaining_percentage?: unknown }).remaining_percentage;
+  if (typeof remaining !== "number" || !Number.isFinite(remaining) || remaining < 0 || remaining > 100) {
+    return {
+      ok: false,
+      reason: "unreadable",
+      detail: `${path} has no remaining_percentage in 0-100`,
+    };
+  }
+
+  // The writer always records ts; fall back to the file's mtime if a reading
+  // somehow lacks it, rather than treating it as fresh.
+  let ts = (data as { ts?: unknown }).ts;
+  if (typeof ts !== "number" || !Number.isFinite(ts)) {
+    try {
+      ts = Math.floor(statSync(path).mtimeMs / 1000);
+    } catch {
+      ts = 0;
+    }
+  }
+  const tsNum = ts as number;
+  const ageSec = Math.max(0, now - tsNum);
+
+  if (notBefore !== undefined && tsNum < notBefore) {
+    return {
+      ok: false,
+      reason: "stale",
+      detail: `reading predates ${new Date(notBefore * 1000).toISOString()} (written before the last compaction); repainted on the next fresh reading or nerf call`,
+    };
+  }
+
+  if (ageSec > STALE_AFTER_SEC) {
+    return {
+      ok: false,
+      reason: "stale",
+      detail: `reading stale since ${new Date(tsNum * 1000).toISOString()} (${remaining}% remaining then)`,
+    };
+  }
+
+  return {
+    ok: true,
+    usedPercent: 100 - remaining,
+    remainingPercent: remaining,
+    ts: tsNum,
+    ageSec,
+  };
 }

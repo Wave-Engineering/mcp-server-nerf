@@ -1,152 +1,157 @@
 /**
- * Tests for context.ts — Context usage estimation module
+ * Tests for context.ts — reading the statusline's persisted context.
  *
- * Testing strategy:
- *   - "returns null when no transcript" and "returns null when analyzer missing":
- *     Test real behavior with nonexistent paths/sessions.
- *   - "parses valid analyzer output": Create a temp shell script that echoes
- *     known JSON, point the function at it via NERF_ANALYZER_PATH env var.
- *   - "handles malformed output": Same approach with bad JSON.
+ * No fake analyzer and no nerf-only path override. The reading lives where
+ * claudecode-workflow's statusline writes it:
+ *
+ *   ${CLAUDE_CONTEXT_STATE_DIR:-~/.claude/state/context}/<session_id>.json
+ *
+ * "reads persisted context" exercises the DEFAULT layout (HOME pointed at a
+ * temp dir, CLAUDE_CONTEXT_STATE_DIR unset), so it fails if nerf and the
+ * statusline ever disagree about where the file lives. The fixture is written
+ * in the exact shape the statusline's jq emits:
+ *   {session_id: $s, remaining_percentage: $p, ts: $t}
  */
 
-import { test, expect, describe, afterEach } from "bun:test";
-import { mkdtempSync, writeFileSync, chmodSync, rmSync } from "node:fs";
+import { test, expect, describe, beforeEach, afterEach } from "bun:test";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir, homedir } from "node:os";
-import { getContextUsage } from "../context";
+import { tmpdir } from "node:os";
+import { getContextReading, contextStateDir, STALE_AFTER_SEC } from "../context";
 
-describe("getContextUsage", () => {
-  const originalEnv = { ...process.env };
+const NOW = 1_760_000_000;
+
+function writeReading(dir: string, sessionId: string, body: unknown): void {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${sessionId}.json`), typeof body === "string" ? body : JSON.stringify(body));
+}
+
+describe("getContextReading — default layout", () => {
+  let home: string;
+  let originalHome: string | undefined;
+  let originalStateDir: string | undefined;
+
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "nerf-home-"));
+    originalHome = process.env.HOME;
+    originalStateDir = process.env.CLAUDE_CONTEXT_STATE_DIR;
+    process.env.HOME = home;
+    delete process.env.CLAUDE_CONTEXT_STATE_DIR;
+  });
 
   afterEach(() => {
-    // Restore environment after each test
-    process.env.NERF_ANALYZER_PATH = originalEnv.NERF_ANALYZER_PATH;
+    process.env.HOME = originalHome;
+    if (originalStateDir !== undefined) process.env.CLAUDE_CONTEXT_STATE_DIR = originalStateDir;
+    rmSync(home, { recursive: true, force: true });
   });
 
-  test("returns null when no transcript exists", async () => {
-    // Use a session ID that cannot possibly exist
-    const result = await getContextUsage("nonexistent-session-id-000000");
-    expect(result).toBeNull();
+  test("resolves to ~/.claude/state/context with no override", () => {
+    expect(contextStateDir()).toBe(join(home, ".claude", "state", "context"));
   });
 
-  test("returns null when analyzer script is missing", async () => {
-    // Point NERF_ANALYZER_PATH at a nonexistent file
-    process.env.NERF_ANALYZER_PATH = "/tmp/nonexistent-analyzer-script.sh";
-    const result = await getContextUsage("any-session-id");
-    expect(result).toBeNull();
+  test("reads persisted context", () => {
+    const sid = "4f2c9a10-1b2c-4d3e-8f90-abcdef012345";
+    writeReading(join(home, ".claude", "state", "context"), sid, {
+      session_id: sid,
+      remaining_percentage: 42,
+      ts: NOW - 30,
+    });
+
+    const reading = getContextReading(sid, NOW);
+
+    expect(reading.ok).toBe(true);
+    if (!reading.ok) return;
+    expect(reading.usedPercent).toBe(58);
+    expect(reading.remainingPercent).toBe(42);
+    expect(reading.ts).toBe(NOW - 30);
+    expect(reading.ageSec).toBe(30);
+  });
+});
+
+describe("getContextReading — failure modes are named, never null", () => {
+  let stateDir: string;
+  let originalStateDir: string | undefined;
+
+  beforeEach(() => {
+    stateDir = mkdtempSync(join(tmpdir(), "nerf-context-state-"));
+    originalStateDir = process.env.CLAUDE_CONTEXT_STATE_DIR;
+    process.env.CLAUDE_CONTEXT_STATE_DIR = stateDir;
   });
 
-  test("parses valid analyzer output", async () => {
-    // Create a temp directory with a fake analyzer and transcript
-    const tempDir = mkdtempSync(join(tmpdir(), "nerf-test-"));
-    const sessionId = "test-valid-parse-session";
+  afterEach(() => {
+    if (originalStateDir === undefined) delete process.env.CLAUDE_CONTEXT_STATE_DIR;
+    else process.env.CLAUDE_CONTEXT_STATE_DIR = originalStateDir;
+    rmSync(stateDir, { recursive: true, force: true });
+  });
 
-    try {
-      // Create a fake analyzer script that echoes known JSON
-      const fakeAnalyzer = join(tempDir, "fake-analyzer.sh");
-      writeFileSync(
-        fakeAnalyzer,
-        `#!/bin/bash
-analyze_context() {
-  cat <<'ENDJSON'
-{
-  "tokens": {
-    "input": 40000,
-    "cache_create": 8000,
-    "cache_read": 2000,
-    "output": 1500,
-    "total": 50000
-  },
-  "limit": 200000,
-  "percent": 40.0,
-  "action": "none"
-}
-ENDJSON
-}
-`,
-      );
-      chmodSync(fakeAnalyzer, 0o755);
+  test("no file → no-reading, with the path in the detail", () => {
+    const reading = getContextReading("no-such-session", NOW);
+    expect(reading.ok).toBe(false);
+    if (reading.ok) return;
+    expect(reading.reason).toBe("no-reading");
+    expect(reading.detail).toContain(join(stateDir, "no-such-session.json"));
+  });
 
-      // Create a fake transcript at the expected location
-      const projectsDir = join(homedir(), ".claude", "projects");
-      // Find an existing project slug directory to place our transcript
-      // (or create a temp one under projects)
-      const fakeProjectDir = join(projectsDir, "-tmp-nerf-test");
-      const transcriptPath = join(fakeProjectDir, `${sessionId}.jsonl`);
+  test("malformed JSON → unreadable", () => {
+    writeReading(stateDir, "bad-json", "THIS IS NOT JSON {{{{");
+    const reading = getContextReading("bad-json", NOW);
+    expect(reading.ok).toBe(false);
+    if (reading.ok) return;
+    expect(reading.reason).toBe("unreadable");
+  });
 
-      // Create the directory and transcript
-      const { mkdirSync } = await import("node:fs");
-      mkdirSync(fakeProjectDir, { recursive: true });
-      writeFileSync(
-        transcriptPath,
-        JSON.stringify({
-          type: "assistant",
-          message: {
-            model: "claude-sonnet-4-20250514",
-            usage: {
-              input_tokens: 40000,
-              cache_creation_input_tokens: 8000,
-              cache_read_input_tokens: 2000,
-              output_tokens: 1500,
-            },
-          },
-        }) + "\n",
-      );
-
-      // Point the function at our fake analyzer
-      process.env.NERF_ANALYZER_PATH = fakeAnalyzer;
-
-      const result = await getContextUsage(sessionId);
-
-      expect(result).not.toBeNull();
-      expect(result!.total).toBe(50000);
-      expect(result!.limit).toBe(200000);
-      expect(result!.percent).toBe(40.0);
-
-      // Cleanup transcript and directory
-      rmSync(transcriptPath, { force: true });
-      rmSync(fakeProjectDir, { recursive: true, force: true });
-    } finally {
-      rmSync(tempDir, { recursive: true, force: true });
+  test("missing or out-of-range remaining_percentage → unreadable", () => {
+    for (const [sid, remaining] of [["no-pct", undefined], ["neg-pct", -1], ["big-pct", 101], ["str-pct", "42"]] as const) {
+      writeReading(stateDir, sid, { session_id: sid, remaining_percentage: remaining, ts: NOW });
+      const reading = getContextReading(sid, NOW);
+      expect(reading.ok).toBe(false);
+      if (reading.ok) return;
+      expect(reading.reason).toBe("unreadable");
     }
   });
 
-  test("handles malformed analyzer output", async () => {
-    // Create a fake analyzer that outputs invalid JSON
-    const tempDir = mkdtempSync(join(tmpdir(), "nerf-test-malformed-"));
-    const sessionId = "test-malformed-session";
+  test("older than STALE_AFTER_SEC → stale, naming when", () => {
+    writeReading(stateDir, "old", { session_id: "old", remaining_percentage: 42, ts: NOW - STALE_AFTER_SEC - 1 });
+    const reading = getContextReading("old", NOW);
+    expect(reading.ok).toBe(false);
+    if (reading.ok) return;
+    expect(reading.reason).toBe("stale");
+    expect(reading.detail).toContain("reading stale since");
+  });
 
-    try {
-      const fakeAnalyzer = join(tempDir, "bad-analyzer.sh");
-      writeFileSync(
-        fakeAnalyzer,
-        `#!/bin/bash
-analyze_context() {
-  echo "THIS IS NOT JSON {{{{"
-}
-`,
-      );
-      chmodSync(fakeAnalyzer, 0o755);
+  test("exactly STALE_AFTER_SEC old is still fresh", () => {
+    writeReading(stateDir, "edge", { session_id: "edge", remaining_percentage: 42, ts: NOW - STALE_AFTER_SEC });
+    expect(getContextReading("edge", NOW).ok).toBe(true);
+  });
 
-      // Create a fake transcript so we get past the transcript-finding step
-      const projectsDir = join(homedir(), ".claude", "projects");
-      const fakeProjectDir = join(projectsDir, "-tmp-nerf-test-malformed");
-      const transcriptPath = join(fakeProjectDir, `${sessionId}.jsonl`);
+  test("a session id that cannot be a filename is refused, not read", () => {
+    const reading = getContextReading("../../etc/passwd", NOW);
+    expect(reading.ok).toBe(false);
+    if (reading.ok) return;
+    expect(reading.reason).toBe("unreadable");
+  });
 
-      const { mkdirSync } = await import("node:fs");
-      mkdirSync(fakeProjectDir, { recursive: true });
-      writeFileSync(transcriptPath, '{"type":"assistant"}\n');
+  test("notBefore: a reading written before the cutoff is stale, after it is fresh", () => {
+    writeReading(stateDir, "compacted", { session_id: "compacted", remaining_percentage: 12, ts: NOW - 5 });
+    const before = getContextReading("compacted", NOW, NOW - 2);
+    expect(before.ok).toBe(false);
+    if (before.ok) return;
+    expect(before.reason).toBe("stale");
+    expect(before.detail).toContain("before the last compaction");
+    expect(getContextReading("compacted", NOW, NOW - 10).ok).toBe(true);
+  });
 
-      process.env.NERF_ANALYZER_PATH = fakeAnalyzer;
+  test("an empty CLAUDE_CONTEXT_STATE_DIR means unset, as in the writer's ${VAR:-default}", () => {
+    process.env.CLAUDE_CONTEXT_STATE_DIR = "";
+    expect(contextStateDir()).toBe(join(process.env.HOME || "", ".claude", "state", "context"));
+  });
 
-      const result = await getContextUsage(sessionId);
-      expect(result).toBeNull();
-
-      // Cleanup
-      rmSync(transcriptPath, { force: true });
-      rmSync(fakeProjectDir, { recursive: true, force: true });
-    } finally {
-      rmSync(tempDir, { recursive: true, force: true });
-    }
+  test("boundary values 0 and 100 remaining are valid", () => {
+    writeReading(stateDir, "full", { session_id: "full", remaining_percentage: 0, ts: NOW });
+    writeReading(stateDir, "empty", { session_id: "empty", remaining_percentage: 100, ts: NOW });
+    const full = getContextReading("full", NOW);
+    const empty = getContextReading("empty", NOW);
+    expect(full.ok && full.usedPercent).toBe(100);
+    expect(empty.ok && empty.usedPercent).toBe(0);
   });
 });

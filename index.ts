@@ -69,22 +69,23 @@ export const TOOLS: Tool[] = [
   },
   {
     name: "nerf_darts",
-    description: "Get or set individual dart thresholds (soft, hard, ouch)",
+    description:
+      "Get or set individual dart thresholds (soft, hard, ouch) as percent of the context window used",
     inputSchema: {
       type: "object" as const,
       properties: {
         ...SESSION_ID_PROP,
         soft: {
           type: "number",
-          description: "Soft dart threshold (token count)",
+          description: "Soft dart threshold (percent of window used, 1-99)",
         },
         hard: {
           type: "number",
-          description: "Hard dart threshold (token count)",
+          description: "Hard dart threshold (percent of window used, 1-99)",
         },
         ouch: {
           type: "number",
-          description: "Ouch dart threshold (token count)",
+          description: "Ouch dart threshold (percent of window used, 1-99)",
         },
       },
     },
@@ -99,7 +100,7 @@ export const TOOLS: Tool[] = [
         ...SESSION_ID_PROP,
         ouch: {
           type: "number",
-          description: "The ouch (max) dart threshold to set",
+          description: "The ouch (max) dart threshold to set (percent of window used, 1-99)",
         },
       },
       required: ["ouch"],
@@ -107,14 +108,14 @@ export const TOOLS: Tool[] = [
   },
   {
     name: "nerf_scope",
-    description: "Launch the context monitor to track token usage over time",
+    description: "Launch a live context monitor for this session in a new terminal",
     inputSchema: {
       type: "object" as const,
       properties: {
         ...SESSION_ID_PROP,
         interval: {
           type: "number",
-          description: "Polling interval in milliseconds (default: 30000)",
+          description: "Refresh interval in milliseconds (default: 5000, minimum: 1000)",
         },
       },
     },

@@ -5,18 +5,10 @@
  * Updates statusline indicator based on context level.
  */
 
-import { readConfig, MODE_MAP, type NerfConfig } from "./config.ts";
+import { readConfig } from "./config.ts";
 import { resolveSessionId } from "./session.ts";
-import { getContextUsage } from "./context.ts";
+import { getContextReading, type ContextReading } from "./context.ts";
 import { updateStatuslineIndicator } from "./indicator.ts";
-
-/**
- * Format a token count for human-readable display.
- * e.g., 120000 -> "120k", 1500 -> "2k", 200000 -> "200k"
- */
-export function formatTokenCount(value: number): string {
-  return Math.round(value / 1000) + "k";
-}
 
 /**
  * Mode descriptions for display.
@@ -26,6 +18,28 @@ const MODE_DESCRIPTIONS: Record<string, string> = {
   "hurt-me-plenty": "prompted crystallization — reminders at thresholds",
   ultraviolence: "auto-crystallize — yolo mode, saves state automatically",
 };
+
+/**
+ * Format a reading's age for display: "12s", "4m", "1h".
+ */
+export function formatAge(ageSec: number): string {
+  if (ageSec < 60) return `${ageSec}s`;
+  if (ageSec < 3600) return `${Math.floor(ageSec / 60)}m`;
+  return `${Math.floor(ageSec / 3600)}h`;
+}
+
+/**
+ * Format the context line. A missing or stale reading says why; it is never
+ * rendered as a number.
+ */
+export function formatContextLine(reading: ContextReading): string {
+  if (!reading.ok) {
+    return `Context: unknown — ${reading.detail}`;
+  }
+  const used = Math.round(reading.usedPercent);
+  const remaining = Math.round(reading.remainingPercent);
+  return `Context: ${used}% used (${remaining}% remaining), as of ${formatAge(reading.ageSec)} ago`;
+}
 
 /**
  * Handle the nerf_status tool call.
@@ -39,39 +53,21 @@ export async function handleStatus(
   const modeDescription =
     MODE_DESCRIPTIONS[modeName] ?? "unknown mode";
 
-  // Fetch context usage for display
-  const contextUsage = await getContextUsage(sessionId);
+  const reading = getContextReading(sessionId);
 
   // Update statusline indicator (side-effect)
   await updateStatuslineIndicator(sessionId, config);
 
-  // Format dart values
-  const softStr = formatTokenCount(config.darts.soft);
-  const hardStr = formatTokenCount(config.darts.hard);
-  const ouchStr = formatTokenCount(config.darts.ouch);
-
-  // Format context line
-  let contextLine: string;
-  if (contextUsage) {
-    // Compute percent against the LOCAL config's ouch, not the analyzer's
-    // `percent` field. The upstream context-analyzer.sh computes its percent
-    // against its own hardcoded `limit` (the global crystallizer default),
-    // which diverges from the displayed denominator the moment a user lifts
-    // their nerf darts via nerf_darts/nerf_budget. See issue #15.
-    const pct = Math.round((contextUsage.total / config.darts.ouch) * 100);
-    contextLine = `Context: ${formatTokenCount(contextUsage.total)}/${ouchStr} (${pct}%)`;
-  } else {
-    contextLine = "Context: unavailable";
-  }
+  const { soft, hard, ouch } = config.darts_pct;
 
   return [
     `nerf — ${modeName} (${modeDescription})`,
     "",
-    "Darts:",
-    `  soft   ${softStr}   warning`,
-    `  hard   ${hardStr}   crystallize`,
-    `  ouch   ${ouchStr}   compact or die`,
+    "Darts (percent of context window used):",
+    `  soft   ${soft}%   warning`,
+    `  hard   ${hard}%   crystallize`,
+    `  ouch   ${ouch}%   compact or die`,
     "",
-    contextLine,
+    formatContextLine(reading),
   ].join("\n");
 }

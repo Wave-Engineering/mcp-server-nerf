@@ -1,8 +1,9 @@
 /**
  * Unit tests for budget.ts — nerf_budget tool handler.
  *
- * Tests use real filesystem operations with temp config files.
- * No mocking of internal modules.
+ * ouch is a percentage of the context window used (#32); soft and hard are
+ * placed at 60% and 75% of it. Tests use real filesystem operations with temp
+ * config files. No mocking of internal modules.
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
@@ -12,7 +13,6 @@ import {
   readConfig,
   writeConfig,
   DEFAULTS,
-  type NerfConfig,
 } from "../config.ts";
 import { handleBudget } from "../budget.ts";
 
@@ -27,193 +27,133 @@ describe("nerf_budget", () => {
   afterEach(() => {
     delete process.env.CLAUDE_SESSION_ID;
     const path = configPath(testSessionId);
-    try { rmSync(path, { force: true }); } catch { /* ignore */ }
-    try { rmSync(`${path}.tmp`, { force: true }); } catch { /* ignore */ }
+    rmSync(path, { force: true });
+    rmSync(`${path}.tmp`, { force: true });
   });
 
   test("budget uses explicit session_id param over env var", async () => {
     const overrideId = `override-budget-${Date.now()}`;
     delete process.env.CLAUDE_SESSION_ID;
 
-    const result = await handleBudget({ ouch: 100_000, session_id: overrideId });
+    const result = await handleBudget({ ouch: 80, session_id: overrideId });
 
-    expect(result).toContain("Budget set:");
-    expect(result).toContain("ouch   100k");
+    expect(result).toContain("Budget set");
+    expect(result).toContain("ouch   80%");
+    expect(readConfig(overrideId).darts_pct.ouch).toBe(80);
 
-    // Verify config was written to override session
-    const config = readConfig(overrideId);
-    expect(config.darts.ouch).toBe(100_000);
-
-    try { rmSync(configPath(overrideId), { force: true }); } catch { /* ignore */ }
+    rmSync(configPath(overrideId), { force: true });
   });
 
   test("budget computes proportional darts", async () => {
-    const result = await handleBudget({ ouch: 200_000 });
+    const result = await handleBudget({ ouch: 80 });
 
-    // soft = floor(200000 * 0.60) = 120000
-    // hard = floor(200000 * 0.75) = 150000
-    expect(result).toContain("Budget set:");
-    expect(result).toContain("soft   120k");
-    expect(result).toContain("hard   150k");
-    expect(result).toContain("ouch   200k");
+    // soft = floor(80 * 0.60) = 48, hard = floor(80 * 0.75) = 60
+    expect(result).toContain("soft   48%");
+    expect(result).toContain("hard   60%");
+    expect(result).toContain("ouch   80%");
+  });
+
+  test("budget(85) reproduces the defaults", async () => {
+    await handleBudget({ ouch: 85 });
+    expect(readConfig(testSessionId).darts_pct).toEqual(DEFAULTS.darts_pct);
   });
 
   test("budget writes config", async () => {
-    await handleBudget({ ouch: 200_000 });
-
-    const config = readConfig(testSessionId);
-    expect(config.darts.soft).toBe(120_000);
-    expect(config.darts.hard).toBe(150_000);
-    expect(config.darts.ouch).toBe(200_000);
-  });
-
-  test("budget uses Math.floor for non-round values", async () => {
-    // 170_000 * 0.60 = 102_000 (exact)
-    // 170_000 * 0.75 = 127_500 → floor = 127_500 (exact)
-    await handleBudget({ ouch: 170_000 });
-
-    const config = readConfig(testSessionId);
-    expect(config.darts.soft).toBe(102_000);
-    expect(config.darts.hard).toBe(127_500);
-    expect(config.darts.ouch).toBe(170_000);
+    await handleBudget({ ouch: 90 });
+    expect(readConfig(testSessionId).darts_pct).toEqual({ soft: 54, hard: 67, ouch: 90 });
   });
 
   test("budget uses Math.floor for values producing fractions", async () => {
-    // 133_333 * 0.60 = 79_999.8 → floor = 79_999
-    // 133_333 * 0.75 = 99_999.75 → floor = 99_999
-    await handleBudget({ ouch: 133_333 });
-
-    const config = readConfig(testSessionId);
-    expect(config.darts.soft).toBe(79_999);
-    expect(config.darts.hard).toBe(99_999);
-    expect(config.darts.ouch).toBe(133_333);
+    // 77 * 0.60 = 46.2 -> 46, 77 * 0.75 = 57.75 -> 57
+    await handleBudget({ ouch: 77 });
+    expect(readConfig(testSessionId).darts_pct).toEqual({ soft: 46, hard: 57, ouch: 77 });
   });
 
-  test("budget rejects zero", async () => {
-    const result = await handleBudget({ ouch: 0 });
-
-    expect(result).toContain("Error");
-    expect(result).toContain("positive integer");
+  test("budget rejects out-of-range values: 0, 100, negative, old token counts", async () => {
+    for (const bad of [0, 100, -5, 200_000]) {
+      const result = await handleBudget({ ouch: bad });
+      expect(result).toContain("Error");
+      expect(result).toContain("integer percentage from 1 to 99");
+    }
   });
 
-  test("budget rejects negative values", async () => {
-    const result = await handleBudget({ ouch: -100_000 });
-
+  test("budget rejects an ouch too low to place soft and hard below it", async () => {
+    // 2 * 0.60 -> 1, 2 * 0.75 -> 1: soft == hard
+    const result = await handleBudget({ ouch: 2 });
     expect(result).toContain("Error");
-    expect(result).toContain("positive integer");
+    expect(result).toContain("too low");
+    // 1 * 0.60 -> 0
+    expect(await handleBudget({ ouch: 1 })).toContain("too low");
   });
 
   test("budget rejects non-integer values", async () => {
-    const result = await handleBudget({ ouch: 200_000.5 });
-
+    const result = await handleBudget({ ouch: 80.5 });
     expect(result).toContain("Error");
-    expect(result).toContain("positive integer");
+    expect(result).toContain("integer percentage");
   });
 
   test("budget rejects missing ouch parameter", async () => {
     const result = await handleBudget({});
-
     expect(result).toContain("Error");
-    expect(result).toContain("ouch");
+    expect(result).toContain("ouch parameter is required");
   });
 
   test("budget preserves mode when setting thresholds", async () => {
-    const config: NerfConfig = {
-      mode: "ultraviolence",
-      darts: { soft: 120_000, hard: 150_000, ouch: 200_000 },
-      session_id: testSessionId,
-    };
-    writeConfig(testSessionId, config);
+    writeConfig(testSessionId, { ...DEFAULTS, mode: "ultraviolence", session_id: testSessionId });
 
-    await handleBudget({ ouch: 180_000 });
+    await handleBudget({ ouch: 80 });
 
     const updated = readConfig(testSessionId);
     expect(updated.mode).toBe("ultraviolence");
-    // Darts should be updated proportionally
-    expect(updated.darts.soft).toBe(Math.floor(180_000 * 0.60));
-    expect(updated.darts.hard).toBe(Math.floor(180_000 * 0.75));
-    expect(updated.darts.ouch).toBe(180_000);
+    expect(updated.darts_pct.ouch).toBe(80);
   });
 
-  test("budget display includes percentage labels", async () => {
-    const result = await handleBudget({ ouch: 200_000 });
-
-    expect(result).toContain("60%");
-    expect(result).toContain("75%");
+  test("budget display includes the ratio labels", async () => {
+    const result = await handleBudget({ ouch: 80 });
+    expect(result).toContain("60% of ouch");
+    expect(result).toContain("75% of ouch");
   });
 
-  // Regression: #13 — same root cause as darts handler. TS compile-time cast
-  // at `budget.ts:25` does not coerce string JSON values, so stringified
-  // numeric inputs were rejected with a misleading error.
+  // Regression: #13 — MCP clients may stringify numeric tool-call args.
   test("budget accepts string-valued ouch and normalizes to integer", async () => {
-    const result = await handleBudget({ ouch: "200000" });
-
+    const result = await handleBudget({ ouch: "80" });
     expect(result).not.toContain("Error");
-    expect(result).toContain("Budget set:");
-    expect(result).toContain("soft   120k");
-    expect(result).toContain("hard   150k");
-    expect(result).toContain("ouch   200k");
-
     const config = readConfig(testSessionId);
-    expect(config.darts.ouch).toBe(200_000);
-    expect(config.darts.soft).toBe(120_000);
-    expect(config.darts.hard).toBe(150_000);
-    expect(typeof config.darts.ouch).toBe("number");
-    expect(typeof config.darts.soft).toBe("number");
-    expect(typeof config.darts.hard).toBe("number");
+    expect(config.darts_pct.ouch).toBe(80);
+    expect(typeof config.darts_pct.ouch).toBe("number");
   });
 
-  test("budget rejects non-numeric string ouch with clear error", async () => {
-    const result = await handleBudget({ ouch: "abc" });
-
-    expect(result).toContain("Error");
-    expect(result).toContain("ouch");
-  });
-
-  test("budget rejects suffix-notation strings like '200k'", async () => {
-    const result = await handleBudget({ ouch: "200k" });
-
-    expect(result).toContain("Error");
-    expect(result).toContain("ouch");
+  test("budget rejects non-numeric and suffix-notation strings", async () => {
+    for (const bad of ["abc", "80%"]) {
+      const result = await handleBudget({ ouch: bad });
+      expect(result).toContain("Error");
+      expect(result).toContain("ouch");
+    }
   });
 
   test("budget rejects string values that parse to non-integer floats", async () => {
-    const result = await handleBudget({ ouch: "200000.5" });
-
+    const result = await handleBudget({ ouch: "80.5" });
     expect(result).toContain("Error");
-    expect(result).toContain("positive integer");
+    expect(result).toContain("integer percentage");
   });
 
   test("budget rejects string zero and negative values", async () => {
-    const zero = await handleBudget({ ouch: "0" });
-    expect(zero).toContain("Error");
-    expect(zero).toContain("positive integer");
-
-    const neg = await handleBudget({ ouch: "-100000" });
-    expect(neg).toContain("Error");
-    expect(neg).toContain("positive integer");
+    for (const bad of ["0", "-80"]) {
+      const result = await handleBudget({ ouch: bad });
+      expect(result).toContain("Error");
+      expect(result).toContain("integer percentage");
+    }
   });
 
   test("budget treats explicit null as 'not provided' and emits the missing-param error", async () => {
-    // Same null-as-undefined treatment as darts. The "ouch is required" error
-    // should fire instead of a "got null" type-violation message.
     const result = await handleBudget({ ouch: null });
-
     expect(result).toContain("Error");
-    expect(result).toContain("ouch");
-    expect(result).toContain("required");
+    expect(result).toContain("ouch parameter is required");
   });
 
   test("budget accepts JSON-compliant scientific notation strings", async () => {
-    // Number("2e5") === 200000, passes the existing isInteger check.
-    // Locked in via test so a future stricter parser cannot silently regress it.
-    const result = await handleBudget({ ouch: "2e5" });
-
+    const result = await handleBudget({ ouch: "8e1" });
     expect(result).not.toContain("Error");
-    expect(result).toContain("Budget set:");
-    expect(result).toContain("ouch   200k");
-
-    const config = readConfig(testSessionId);
-    expect(config.darts.ouch).toBe(200_000);
+    expect(readConfig(testSessionId).darts_pct.ouch).toBe(80);
   });
 });

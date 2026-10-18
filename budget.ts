@@ -1,15 +1,23 @@
 /**
  * nerf_budget tool handler.
  *
- * Sets the ouch dart and computes proportional soft/hard thresholds.
+ * Sets the ouch dart (percent of the context window used) and computes
+ * proportional soft/hard thresholds:
  * soft = floor(ouch * 0.60), hard = floor(ouch * 0.75).
  */
 
-import { readConfig, writeConfig, type NerfConfig } from "./config.ts";
+import {
+  readConfig,
+  writeConfig,
+  SOFT_RATIO,
+  HARD_RATIO,
+  type Darts,
+  type NerfConfig,
+} from "./config.ts";
 import { resolveSessionId } from "./session.ts";
-import { formatTokenCount } from "./status.ts";
 import { updateStatuslineIndicator } from "./indicator.ts";
-import { coerceNumericInput, formatRawValue } from "./numeric.ts";
+import { validateDartValue, validateDartOrder } from "./darts.ts";
+import { coerceNumericInput } from "./numeric.ts";
 import { log } from "./logger.ts";
 
 /**
@@ -34,33 +42,40 @@ export async function handleBudget(
     return "Error: ouch parameter is required";
   }
 
-  // Validate positive integer (rejects NaN, Infinity, floats, non-numeric strings)
-  if (!Number.isInteger(ouch) || ouch <= 0) {
-    return `Error: ouch must be a positive integer, got ${formatRawValue(ouchRaw)}`;
-  }
+  const rangeError = validateDartValue("ouch", ouch, ouchRaw);
+  if (rangeError) return rangeError;
 
   // Compute proportional darts
-  const soft = Math.floor(ouch * 0.60);
-  const hard = Math.floor(ouch * 0.75);
+  const darts: Darts = {
+    soft: Math.floor(ouch * SOFT_RATIO),
+    hard: Math.floor(ouch * HARD_RATIO),
+    ouch,
+  };
+
+  // A very low ouch rounds soft and hard onto each other (or to 0).
+  if (darts.soft < 1) {
+    return `Error: ouch ${ouch}% is too low to place soft and hard below it`;
+  }
+  const orderError = validateDartOrder(darts);
+  if (orderError) {
+    return `Error: ouch ${ouch}% is too low to place soft and hard below it (${orderError.replace(/^Error: /, "")})`;
+  }
 
   // Write to config
-  const oldDarts = { ...config.darts };
-  const newConfig: NerfConfig = {
-    ...config,
-    darts: { soft, hard, ouch },
-  };
+  const oldDarts = { ...config.darts_pct };
+  const newConfig: NerfConfig = { ...config, darts_pct: darts };
   writeConfig(sessionId, newConfig);
   await updateStatuslineIndicator(sessionId, newConfig);
   log.info("state_change", {
     what: "budget",
     from: oldDarts,
-    to: { soft, hard, ouch },
+    to: darts,
   });
 
   return [
-    "Budget set:",
-    `  soft   ${formatTokenCount(soft)}   warning (60%)`,
-    `  hard   ${formatTokenCount(hard)}   crystallize (75%)`,
-    `  ouch   ${formatTokenCount(ouch)}   compact or die`,
+    "Budget set (percent of context window used):",
+    `  soft   ${darts.soft}%   warning (60% of ouch)`,
+    `  hard   ${darts.hard}%   crystallize (75% of ouch)`,
+    `  ouch   ${darts.ouch}%   compact or die`,
   ].join("\n");
 }

@@ -16,8 +16,12 @@ import {
   KNOWN_SUBCOMMANDS,
   runSubcommand,
   clearIndicatorCommand,
+  parseIntervalFlag,
+  parseNotBeforeFlag,
+  renderWatchFrame,
 } from "../cli.ts";
 import { resolveProjectRoot } from "../statusline.ts";
+import type { NerfConfig } from "../config.ts";
 
 describe("isSubcommand", () => {
   test("returns true for known subcommands", () => {
@@ -67,9 +71,54 @@ describe("parseSessionIdFlag", () => {
 });
 
 describe("KNOWN_SUBCOMMANDS", () => {
-  test("includes both expected commands", () => {
+  test("includes the expected commands", () => {
     expect(KNOWN_SUBCOMMANDS).toContain("clear-indicator");
     expect(KNOWN_SUBCOMMANDS).toContain("refresh-indicator");
+    expect(KNOWN_SUBCOMMANDS).toContain("watch");
+  });
+});
+
+describe("parseNotBeforeFlag", () => {
+  test("reads a numeric epoch; undefined when absent, empty or not a number", () => {
+    expect(parseNotBeforeFlag(["--not-before", "1760000000"])).toBe(1760000000);
+    expect(parseNotBeforeFlag(["--session-id", "x"])).toBeUndefined();
+    expect(parseNotBeforeFlag(["--not-before"])).toBeUndefined();
+    expect(parseNotBeforeFlag(["--not-before", ""])).toBeUndefined();
+    expect(parseNotBeforeFlag(["--not-before", "soon"])).toBeUndefined();
+  });
+});
+
+describe("parseIntervalFlag", () => {
+  test("reads the value after --interval, undefined when absent", () => {
+    expect(parseIntervalFlag(["--session-id", "x", "--interval", "2000"])).toBe("2000");
+    expect(parseIntervalFlag(["--session-id", "x"])).toBeUndefined();
+    expect(parseIntervalFlag(["--interval"])).toBeUndefined();
+  });
+});
+
+describe("renderWatchFrame", () => {
+  const config: NerfConfig = {
+    mode: "hurt-me-plenty",
+    darts_pct: { soft: 51, hard: 63, ouch: 85 },
+    session_id: "s",
+  };
+
+  test("shows the reading, darts and level", () => {
+    const frame = renderWatchFrame(
+      "sess-1",
+      config,
+      { ok: true, usedPercent: 70, remainingPercent: 30, ts: 0, ageSec: 3 },
+    );
+    expect(frame).toContain("nerf scope — session sess-1");
+    expect(frame).toContain("Context: 70% used (30% remaining), as of 3s ago");
+    expect(frame).toContain("Darts: soft 51% · hard 63% · ouch 85%");
+    expect(frame).toContain("Level: hard");
+  });
+
+  test("an unknown reading is shown as unknown with its reason", () => {
+    const frame = renderWatchFrame("sess-1", config, { ok: false, reason: "no-reading", detail: "no reading for this session" });
+    expect(frame).toContain("Context: unknown — no reading for this session");
+    expect(frame).toContain("Level: unknown  ctx ?");
   });
 });
 
@@ -111,11 +160,18 @@ describe("subcommand smoke tests (no-agent-file path)", () => {
     await expect(runSubcommand("clear-indicator", [])).resolves.toBeUndefined();
   });
 
-  test("runSubcommand('refresh-indicator') resolves without throwing when no transcript exists", async () => {
+  test("runSubcommand('refresh-indicator') resolves without throwing when no reading exists", async () => {
     // resolveSessionId may fall through to the synthetic fallback. With no
-    // transcript at the resolved path, getContextUsage returns null and
-    // updateStatuslineIndicator collapses to a removeIndicator-only no-op.
+    // persisted reading the indicator would be `nerf:ctx ?`, but with no
+    // agent identity file for this project root (guarded above) there is no
+    // statusline file to write, so the helpers are graceful no-ops.
     await expect(runSubcommand("refresh-indicator", [])).resolves.toBeUndefined();
+  });
+
+  test("runSubcommand('refresh-indicator') accepts --not-before", async () => {
+    await expect(
+      runSubcommand("refresh-indicator", ["--session-id", "x-1", "--not-before", "1760000000"]),
+    ).resolves.toBeUndefined();
   });
 
   test("runSubcommand('refresh-indicator') accepts an explicit --session-id", async () => {

@@ -62,19 +62,20 @@ describe("nerf_status", () => {
     const result = await handleStatus({});
 
     expect(result).toContain("nerf — ultraviolence");
-    expect(result).toContain("auto-crystallize");
+    expect(result).toContain("reseed automatically at the ouch dart");
+    expect(result.toLowerCase()).not.toContain("crystalliz");
     expect(result).toContain("soft   40%   warning");
-    expect(result).toContain("hard   55%   crystallize");
-    expect(result).toContain("ouch   70%   compact or die");
+    expect(result).toContain("hard   55%   reseed soon");
+    expect(result).toContain("ouch   70%   reseed gate fires");
   });
 
   test("status shows defaults when no config exists", async () => {
     const result = await handleStatus({});
 
-    expect(result).toContain("nerf — hurt-me-plenty");
+    expect(result).toContain("nerf — ultraviolence");
     expect(result).toContain("soft   51%   warning");
-    expect(result).toContain("hard   63%   crystallize");
-    expect(result).toContain("ouch   85%   compact or die");
+    expect(result).toContain("hard   63%   reseed soon");
+    expect(result).toContain("ouch   85%   reseed gate fires");
   });
 
   test("status shows a real reading in percent used and remaining", async () => {
@@ -112,7 +113,7 @@ describe("nerf_status", () => {
     const result = await handleStatus({ session_id: overrideId });
 
     expect(result).toContain("nerf — ultraviolence");
-    expect(result).toContain("ouch   60%   compact or die");
+    expect(result).toContain("ouch   60%   reseed gate fires");
     expect(result).toContain("Context: 10% used");
 
     rmSync(configPath(overrideId), { force: true });

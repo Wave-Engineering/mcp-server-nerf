@@ -36,18 +36,20 @@ export const HARD_RATIO = 0.75;
  * where claudecode-workflow's reseed gate fires (15% remaining).
  */
 export const DEFAULTS: NerfConfig = {
-  mode: "hurt-me-plenty",
+  mode: "ultraviolence",
   darts_pct: { soft: 51, hard: 63, ouch: 85 },
   session_id: "",
 };
 
 /**
- * Maps doom-style mode names to crystallizer mode names.
+ * What each mode does at the ouch dart. claudecode-workflow's reseed gate reads
+ * `mode` and `darts_pct.ouch` from this file (claudecode-workflow#1352), so the mode strings, the
+ * field names and the path are a contract with that hook.
  */
-export const MODE_MAP: Record<string, string> = {
-  "not-too-rough": "manual",
-  "hurt-me-plenty": "prompt",
-  ultraviolence: "yolo",
+export const MODE_DESCRIPTIONS: Record<NerfConfig["mode"], string> = {
+  "not-too-rough": "at the ouch dart, remind only",
+  "hurt-me-plenty": "at the ouch dart, ask before reseeding",
+  ultraviolence: "reseed automatically at the ouch dart",
 };
 
 /**

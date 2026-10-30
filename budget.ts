@@ -75,7 +75,7 @@ export async function handleBudget(
   return [
     "Budget set (percent of context window used):",
     `  soft   ${darts.soft}%   warning (60% of ouch)`,
-    `  hard   ${darts.hard}%   crystallize (75% of ouch)`,
-    `  ouch   ${darts.ouch}%   compact or die`,
+    `  hard   ${darts.hard}%   reseed soon (75% of ouch)`,
+    `  ouch   ${darts.ouch}%   reseed gate fires`,
   ].join("\n");
 }

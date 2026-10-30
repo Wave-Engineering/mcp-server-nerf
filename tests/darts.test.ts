@@ -48,7 +48,7 @@ describe("nerf_darts", () => {
     const result = await handleDarts({ session_id: overrideId });
 
     expect(result).toContain("soft   30%   warning");
-    expect(result).toContain("ouch   60%   compact or die");
+    expect(result).toContain("ouch   60%   reseed gate fires");
 
     rmSync(configPath(overrideId), { force: true });
   });
@@ -58,16 +58,16 @@ describe("nerf_darts", () => {
 
     expect(result).toContain("Darts (percent of context window used):");
     expect(result).toContain("soft   51%   warning");
-    expect(result).toContain("hard   63%   crystallize");
-    expect(result).toContain("ouch   85%   compact or die");
+    expect(result).toContain("hard   63%   reseed soon");
+    expect(result).toContain("ouch   85%   reseed gate fires");
   });
 
   test("darts sets valid thresholds", async () => {
     const result = await handleDarts({ soft: 40, hard: 60, ouch: 80 });
 
     expect(result).toContain("soft   40%   warning");
-    expect(result).toContain("hard   60%   crystallize");
-    expect(result).toContain("ouch   80%   compact or die");
+    expect(result).toContain("hard   60%   reseed soon");
+    expect(result).toContain("ouch   80%   reseed gate fires");
 
     const config = readConfig(testSessionId);
     expect(config.darts_pct).toEqual({ soft: 40, hard: 60, ouch: 80 });
@@ -147,7 +147,7 @@ describe("nerf_darts", () => {
   test("darts accepts a mix of string and number inputs", async () => {
     const result = await handleDarts({ soft: "40", hard: 60, ouch: "80" });
     expect(result).not.toContain("Error");
-    expect(result).toContain("hard   60%   crystallize");
+    expect(result).toContain("hard   60%   reseed soon");
   });
 
   test("darts rejects non-numeric and suffix-notation strings", async () => {

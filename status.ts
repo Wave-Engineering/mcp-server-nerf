@@ -5,19 +5,10 @@
  * Updates statusline indicator based on context level.
  */
 
-import { readConfig } from "./config.ts";
+import { readConfig, MODE_DESCRIPTIONS } from "./config.ts";
 import { resolveSessionId } from "./session.ts";
 import { getContextReading, type ContextReading } from "./context.ts";
 import { updateStatuslineIndicator } from "./indicator.ts";
-
-/**
- * Mode descriptions for display.
- */
-const MODE_DESCRIPTIONS: Record<string, string> = {
-  "not-too-rough": "manual crystallization — you decide when to save state",
-  "hurt-me-plenty": "prompted crystallization — reminders at thresholds",
-  ultraviolence: "auto-crystallize — yolo mode, saves state automatically",
-};
 
 /**
  * Format a reading's age for display: "12s", "4m", "1h".
@@ -65,8 +56,8 @@ export async function handleStatus(
     "",
     "Darts (percent of context window used):",
     `  soft   ${soft}%   warning`,
-    `  hard   ${hard}%   crystallize`,
-    `  ouch   ${ouch}%   compact or die`,
+    `  hard   ${hard}%   reseed soon`,
+    `  ouch   ${ouch}%   reseed gate fires`,
     "",
     formatContextLine(reading),
   ].join("\n");

@@ -12,7 +12,7 @@ import {
   readConfig,
   writeConfig,
   DEFAULTS,
-  MODE_MAP,
+  MODE_DESCRIPTIONS,
   type NerfConfig,
 } from "../config.ts";
 import { handleMode } from "../mode.ts";
@@ -34,12 +34,12 @@ describe("nerf_mode", () => {
   });
 
   test("mode returns current mode when no arg provided", async () => {
-    // Default mode is hurt-me-plenty
+    // Default mode is ultraviolence (claudecode-workflow#1352)
     const result = await handleMode({});
 
-    expect(result).toContain("Current mode: hurt-me-plenty");
-    expect(result).toContain("prompted crystallization");
-    expect(result).toContain("CRYSTALLIZE_MODE: prompt");
+    expect(result).toContain("Current mode: ultraviolence");
+    expect(result).toContain("reseed automatically at the ouch dart");
+    expect(result).not.toContain("CRYSTALLIZE");
   });
 
   test("mode uses explicit session_id param over env var", async () => {
@@ -71,16 +71,20 @@ describe("nerf_mode", () => {
     const result = await handleMode({});
 
     expect(result).toContain("Current mode: ultraviolence");
-    expect(result).toContain("auto-crystallize");
-    expect(result).toContain("CRYSTALLIZE_MODE: yolo");
+    expect(result).toContain("reseed automatically at the ouch dart");
   });
 
   test("mode sets valid mode — ultraviolence", async () => {
+    writeConfig(testSessionId, {
+      ...DEFAULTS,
+      mode: "not-too-rough",
+      session_id: testSessionId,
+    });
+
     const result = await handleMode({ mode: "ultraviolence" });
 
     expect(result).toContain("Mode set: ultraviolence");
-    expect(result).toContain("auto-crystallize");
-    expect(result).toContain("CRYSTALLIZE_MODE: yolo");
+    expect(result).toContain("reseed automatically at the ouch dart");
 
     // Verify config was actually written
     const config = readConfig(testSessionId);
@@ -91,8 +95,7 @@ describe("nerf_mode", () => {
     const result = await handleMode({ mode: "not-too-rough" });
 
     expect(result).toContain("Mode set: not-too-rough");
-    expect(result).toContain("manual crystallization");
-    expect(result).toContain("CRYSTALLIZE_MODE: manual");
+    expect(result).toContain("at the ouch dart, remind only");
 
     const config = readConfig(testSessionId);
     expect(config.mode).toBe("not-too-rough");
@@ -109,7 +112,7 @@ describe("nerf_mode", () => {
     const result = await handleMode({ mode: "hurt-me-plenty" });
 
     expect(result).toContain("Mode set: hurt-me-plenty");
-    expect(result).toContain("CRYSTALLIZE_MODE: prompt");
+    expect(result).toContain("at the ouch dart, ask before reseeding");
 
     const config = readConfig(testSessionId);
     expect(config.mode).toBe("hurt-me-plenty");
@@ -131,11 +134,12 @@ describe("nerf_mode", () => {
     expect(result).toContain("Invalid mode:");
   });
 
-  test("mode maps correctly to CRYSTALLIZE_MODE", async () => {
-    // Test each mode maps to the right crystallizer mode
-    for (const [doom, crystallizer] of Object.entries(MODE_MAP)) {
-      const result = await handleMode({ mode: doom });
-      expect(result).toContain(`CRYSTALLIZE_MODE: ${crystallizer}`);
+  test("every mode round-trips and prints its description, with no crystallizer line", async () => {
+    for (const [mode, description] of Object.entries(MODE_DESCRIPTIONS)) {
+      const result = await handleMode({ mode });
+      expect(result).toContain(`Description: ${description}`);
+      expect(result).not.toContain("CRYSTALLIZE");
+      expect(readConfig(testSessionId).mode).toBe(mode as NerfConfig["mode"]);
     }
   });
 

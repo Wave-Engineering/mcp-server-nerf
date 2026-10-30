@@ -1,14 +1,14 @@
 /**
  * nerf_mode tool handler.
  *
- * Gets or sets the behavior mode. Validates mode names and maps
- * doom-style names to crystallizer mode names.
+ * Gets or sets the behavior mode: what claudecode-workflow's reseed gate does
+ * at the ouch dart.
  */
 
 import {
   readConfig,
   writeConfig,
-  MODE_MAP,
+  MODE_DESCRIPTIONS,
   type NerfConfig,
 } from "./config.ts";
 import { resolveSessionId } from "./session.ts";
@@ -20,15 +20,6 @@ const VALID_MODES: NerfConfig["mode"][] = [
   "hurt-me-plenty",
   "ultraviolence",
 ];
-
-/**
- * Mode descriptions for display.
- */
-const MODE_DESCRIPTIONS: Record<string, string> = {
-  "not-too-rough": "manual crystallization — you decide when to save state",
-  "hurt-me-plenty": "prompted crystallization — reminders at thresholds",
-  ultraviolence: "auto-crystallize — yolo mode, saves state automatically",
-};
 
 /**
  * Handle the nerf_mode tool call.
@@ -47,11 +38,9 @@ export async function handleMode(
   // No mode arg — return current mode
   if (requestedMode === undefined) {
     const description = MODE_DESCRIPTIONS[config.mode] ?? "unknown mode";
-    const crystallizerMode = MODE_MAP[config.mode] ?? "unknown";
     return [
       `Current mode: ${config.mode}`,
       `Description: ${description}`,
-      `CRYSTALLIZE_MODE: ${crystallizerMode}`,
     ].join("\n");
   }
 
@@ -70,11 +59,10 @@ export async function handleMode(
   await updateStatuslineIndicator(sessionId, newConfig);
   log.info("state_change", { what: "mode", from: oldMode, to: requestedMode });
 
-  const description = MODE_DESCRIPTIONS[requestedMode] ?? "unknown mode";
-  const crystallizerMode = MODE_MAP[requestedMode] ?? "unknown";
+  const description =
+    MODE_DESCRIPTIONS[requestedMode as NerfConfig["mode"]] ?? "unknown mode";
   return [
     `Mode set: ${requestedMode}`,
     `Description: ${description}`,
-    `CRYSTALLIZE_MODE: ${crystallizerMode}`,
   ].join("\n");
 }

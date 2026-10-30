@@ -12,7 +12,7 @@ import {
   writeConfig,
   configPath,
   DEFAULTS,
-  MODE_MAP,
+  MODE_DESCRIPTIONS,
   SOFT_RATIO,
   HARD_RATIO,
   type NerfConfig,
@@ -128,9 +128,26 @@ describe("config", () => {
     expect(hard).toBeLessThan(ouch);
   });
 
-  test("MODE_MAP has correct mappings", () => {
-    expect(MODE_MAP["not-too-rough"]).toBe("manual");
-    expect(MODE_MAP["hurt-me-plenty"]).toBe("prompt");
-    expect(MODE_MAP["ultraviolence"]).toBe("yolo");
+  // claudecode-workflow#1352: the reseed gate reads a missing file as ultraviolence,
+  // so nerf's own default must agree or a written default would flip it to asking.
+  test("a session with no config file reads ultraviolence", () => {
+    expect(DEFAULTS.mode).toBe("ultraviolence");
+    expect(readConfig(testSessionId).mode).toBe("ultraviolence");
+  });
+
+  test("an explicit hurt-me-plenty file still reads back as written", () => {
+    writeFileSync(
+      configPath(testSessionId),
+      JSON.stringify({ mode: "hurt-me-plenty", session_id: testSessionId }),
+      "utf-8",
+    );
+    expect(readConfig(testSessionId).mode).toBe("hurt-me-plenty");
+  });
+
+  test("every mode has a description, and none mentions the retired crystallizer", () => {
+    for (const mode of ["not-too-rough", "hurt-me-plenty", "ultraviolence"] as const) {
+      expect(MODE_DESCRIPTIONS[mode]).toContain("ouch dart");
+      expect(MODE_DESCRIPTIONS[mode].toLowerCase()).not.toContain("crystalliz");
+    }
   });
 });

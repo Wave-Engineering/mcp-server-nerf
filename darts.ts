@@ -104,7 +104,7 @@ export function formatDarts(darts: Darts): string {
   return [
     "Darts (percent of context window used):",
     `  soft   ${darts.soft}%   warning`,
-    `  hard   ${darts.hard}%   crystallize`,
-    `  ouch   ${darts.ouch}%   compact or die`,
+    `  hard   ${darts.hard}%   reseed soon`,
+    `  ouch   ${darts.ouch}%   reseed gate fires`,
   ].join("\n");
 }

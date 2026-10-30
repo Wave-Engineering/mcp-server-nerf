@@ -84,6 +84,23 @@ They're stored under `darts_pct` in `/tmp/nerf-<session_id>.json`. A config
 from before this change, with absolute token `darts`, is migrated on read: the
 token counts are ignored, and the percentage defaults apply.
 
+### Modes
+
+The mode sets what claudecode-workflow's context reseed gate does when the
+session reaches the ouch dart:
+
+| Mode | At the ouch dart |
+|---|---|
+| `ultraviolence` (default) | the agent runs `/reseed` at once |
+| `hurt-me-plenty` | the agent asks the user before it reseeds |
+| `not-too-rough` | a reminder only, no block |
+
+**This file is a contract with that hook.** The gate reads `mode` and
+`darts_pct.ouch` from `/tmp/nerf-<session_id>.json`, and takes its threshold as
+`100 - ouch` percent remaining. Keep the path, those field names and the three
+mode strings stable. A missing or unreadable file means `ultraviolence` and a
+15% threshold to the gate.
+
 ### CLI subcommands
 
 The same binary runs as a one-shot CLI:

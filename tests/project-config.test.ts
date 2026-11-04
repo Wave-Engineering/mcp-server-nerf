@@ -253,6 +253,19 @@ describe("writing: the project file first, then the legacy file", () => {
     }
   });
 
+  // File times tick every few milliseconds, so two small writes in a row often
+  // share one and the order cannot show. A large payload makes each write take
+  // several ticks: the file written second is then strictly newer.
+  test("the order is project first, legacy second: the legacy file is strictly newer", () => {
+    const huge = "x".repeat(32 * 1024 * 1024) as NerfConfig["mode"];
+    writeConfig(sid, cfg({ mode: huge }));
+    const p = statSync(projectConfigPath(), { bigint: true }).mtimeNs;
+    const l = statSync(configPath(sid), { bigint: true }).mtimeNs;
+    expect(l > p).toBe(true);
+    // And the kit, reading the pair, therefore finds the legacy file, which has the same content.
+    expect(selectConfigFile(sid)).toBe(configPath(sid));
+  });
+
   test("a legacy `darts` key is dropped from both files on write", () => {
     put(configPath(sid), { darts: { soft: 1, hard: 2, ouch: 3 }, session_id: sid });
     writeConfig(sid, readConfig(sid));
@@ -426,6 +439,19 @@ describe("keeping the project file out of git", () => {
     writeConfig(sid, cfg());
     expect(readFileSync(join(root, ".git", "info", "exclude"), "utf-8")).toBe(".claude/nerf.json\n");
     expect(git(root, "status", "--porcelain", "-uall").stdout).toBe("");
+  });
+
+  // check-ignore normally stops a second append. A .gitignore that un-ignores the
+  // file outranks info/exclude, so check-ignore says "not ignored" even with the
+  // line present: the line itself must still never be added twice.
+  test("the exclude line is never duplicated, even when check-ignore cannot see it", () => {
+    gitInit(root);
+    writeFileSync(join(root, ".gitignore"), "!.claude/nerf.json\n", "utf-8");
+    writeFileSync(join(root, ".git", "info", "exclude"), ".claude/nerf.json\n", "utf-8");
+    writeConfig(sid, cfg());
+    writeConfig(sid, cfg());
+    const exclude = readFileSync(join(root, ".git", "info", "exclude"), "utf-8");
+    expect(exclude.split("\n").filter((l) => l === ".claude/nerf.json")).toHaveLength(1);
   });
 
   test("a file the project already ignores is left alone", () => {

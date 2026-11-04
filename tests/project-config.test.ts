@@ -9,7 +9,8 @@
  * Real filesystem operations and a real `git`; no mocking of internal modules.
  */
 
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, spyOn } from "bun:test";
+import * as fs from "node:fs";
 import {
   chmodSync,
   existsSync,
@@ -253,17 +254,25 @@ describe("writing: the project file first, then the legacy file", () => {
     }
   });
 
-  // File times tick every few milliseconds, so two small writes in a row often
-  // share one and the order cannot show. A large payload makes each write take
-  // several ticks: the file written second is then strictly newer.
-  test("the order is project first, legacy second: the legacy file is strictly newer", () => {
-    const huge = "x".repeat(32 * 1024 * 1024) as NerfConfig["mode"];
-    writeConfig(sid, cfg({ mode: huge }));
-    const p = statSync(projectConfigPath(), { bigint: true }).mtimeNs;
-    const l = statSync(configPath(sid), { bigint: true }).mtimeNs;
-    expect(l > p).toBe(true);
-    // And the kit, reading the pair, therefore finds the legacy file, which has the same content.
-    expect(selectConfigFile(sid)).toBe(configPath(sid));
+  // File times can be coarse (or a tmpfs can share one tick across two writes),
+  // so the order cannot be proven from mtimes. Prove it from the call order:
+  // each write ends in one rename onto its destination, and the project's must
+  // come first. The spy wraps the real function, so the files are still written.
+  test("the order is project first, legacy second (rename call order)", () => {
+    const real = fs.renameSync;
+    const seen: string[] = [];
+    const spy = spyOn(fs, "renameSync").mockImplementation(((from: string, to: string) => {
+      seen.push(String(to));
+      return real(from, to);
+    }) as typeof fs.renameSync);
+    try {
+      writeConfig(sid, cfg());
+    } finally {
+      spy.mockRestore();
+    }
+    expect(seen).toEqual([projectConfigPath(), configPath(sid)]);
+    // The legacy file, written second, is newer or equal, so the kit finds a file with the same content.
+    expect([projectConfigPath(), configPath(sid)]).toContain(selectConfigFile(sid) ?? "");
   });
 
   test("a legacy `darts` key is dropped from both files on write", () => {
@@ -341,6 +350,18 @@ describe("writing: the project file first, then the legacy file", () => {
   test("an unsafe session id with an unwritable project file throws (nothing could be written)", () => {
     mkdirSync(projectConfigPath(), { recursive: true });
     expect(() => writeConfig("../escape", cfg())).toThrow();
+  });
+
+  test("when both fail the thrown error is the project's, not the synthetic unsafe-id one", () => {
+    mkdirSync(projectConfigPath(), { recursive: true });
+    let message = "";
+    try {
+      writeConfig("../escape", cfg());
+    } catch (err) {
+      message = String(err);
+    }
+    expect(message).not.toBe("");
+    expect(message).not.toContain("unsafe session id");
   });
 });
 
@@ -499,6 +520,16 @@ describe("keeping the project file out of git", () => {
     writeConfig(sid, cfg());
     expect(git(root, "status", "--porcelain", "-uall").stdout).toBe("");
     expect(readFileSync(join(root, ".git", "info", "exclude"), "utf-8")).toContain("pkg/.claude/nerf.json\n");
+  });
+
+  test("a subdirectory whose name is gitignore syntax gets a literal exclude line", () => {
+    gitInit(root);
+    const sub = join(root, "#odd [dir]");
+    mkdirSync(sub);
+    process.env.NERF_PROJECT_ROOT = sub;
+    writeConfig(sid, cfg());
+    expect(git(root, "status", "--porcelain", "-uall").stdout).toBe("");
+    expect(readFileSync(join(root, ".git", "info", "exclude"), "utf-8")).toContain("\\#odd \\[dir\\]/.claude/nerf.json\n");
   });
 
   test("a failure to exclude never fails the write", () => {

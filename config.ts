@@ -87,6 +87,7 @@ export const MODE_DESCRIPTIONS: Record<NerfConfig["mode"], string> = {
 
 /** The path of the project file inside the git-ignored `.claude/` directory. */
 const PROJECT_FILE_REL = ".claude/nerf.json";
+const GIT_TIMEOUT_MS = 5000;
 
 /**
  * Where the legacy per-session files live: NERF_CONFIG_DIR, else /tmp. This is
@@ -211,9 +212,17 @@ function atomicWrite(path: string, body: string): void {
 
 /** Run git in `root`; null when git could not be spawned. */
 function git(root: string, args: string[]): { status: number; out: string } | null {
-  const r = spawnSync("git", ["-C", root, ...args], { encoding: "utf-8" });
+  // A hung git must not hang a setter: bound every call.
+  const r = spawnSync("git", ["-C", root, ...args], { encoding: "utf-8", timeout: GIT_TIMEOUT_MS });
   if (r.error || r.status === null) return null;
-  return { status: r.status, out: (r.stdout ?? "").trim() };
+  // Only the one trailing newline git adds: a path or prefix may begin or end
+  // with a space, and `.trim()` would silently change it.
+  return { status: r.status, out: (r.stdout ?? "").replace(/\n$/, "") };
+}
+
+/** Escape what gitignore reads as syntax, so a directory name matches literally. */
+function escapeGitignore(path: string): string {
+  return path.replace(/[\\*?[\]]/g, "\\$&").replace(/^[ #!]/, "\\$&");
 }
 
 /**
@@ -245,7 +254,7 @@ function excludeFromGit(root: string): void {
     // below it (a subdirectory) needs its prefix. At the top the prefix is
     // empty and the line is exactly `.claude/nerf.json`.
     const prefix = git(root, ["rev-parse", "--show-prefix"]);
-    const line = `${prefix && prefix.status === 0 ? prefix.out : ""}${PROJECT_FILE_REL}`;
+    const line = `${prefix && prefix.status === 0 ? escapeGitignore(prefix.out) : ""}${PROJECT_FILE_REL}`;
 
     let existing = "";
     try {
@@ -282,11 +291,13 @@ export function writeConfig(sessionId: string, config: NerfConfig): void {
   const darts_pct = config.darts_pct;
 
   let projectOk = false;
+  let projectError: unknown = null;
   try {
     mkdirSync(dirname(projectPath), { recursive: true });
     atomicWrite(projectPath, JSON.stringify({ mode: config.mode, darts_pct }, null, 2) + "\n");
     projectOk = true;
   } catch (err) {
+    projectError = err;
     log.warn("config_write", { cause: "project_file", path: projectPath, err: String(err) }, "Could not write the project nerf.json; continuing with the per-session file");
   }
 
@@ -313,6 +324,8 @@ export function writeConfig(sessionId: string, config: NerfConfig): void {
     }
   }
 
-  if (!projectOk && !legacyOk) throw legacyError;
+  // Both failed: surface the real project error, not the synthetic
+  // "unsafe session id" one that merely says the legacy file was skipped.
+  if (!projectOk && !legacyOk) throw projectError ?? legacyError;
   if (projectOk) excludeFromGit(root);
 }

@@ -20,7 +20,10 @@ import {
 
 /**
  * We test readConfig/writeConfig by creating a unique session ID per test
- * that maps to /tmp/nerf-<id>.json. After each test we clean up.
+ * that maps to the per-session file under the preload's temp NERF_CONFIG_DIR.
+ * The project file lands in the preload's temp project root (tests/preload.ts
+ * removes it before every test). tests/project-config.test.ts covers the
+ * project file and the file-selection rule.
  */
 describe("config", () => {
   let testSessionId: string;
@@ -35,8 +38,22 @@ describe("config", () => {
     rmSync(`${path}.tmp`, { force: true });
   });
 
-  test("configPath returns correct path", () => {
-    expect(configPath("abc123")).toBe("/tmp/nerf-abc123.json");
+  // The legacy path follows NERF_CONFIG_DIR (the kit's override knob), which the
+  // test preload points at a temp directory. It used to be hard-coded to /tmp.
+  test("configPath is the per-session file under NERF_CONFIG_DIR", () => {
+    expect(configPath("abc123")).toBe(`${process.env.NERF_CONFIG_DIR}/nerf-abc123.json`);
+  });
+
+  test("configPath defaults to /tmp when NERF_CONFIG_DIR is unset or empty", () => {
+    const before = process.env.NERF_CONFIG_DIR;
+    try {
+      delete process.env.NERF_CONFIG_DIR;
+      expect(configPath("abc123")).toBe("/tmp/nerf-abc123.json");
+      process.env.NERF_CONFIG_DIR = "";
+      expect(configPath("abc123")).toBe("/tmp/nerf-abc123.json");
+    } finally {
+      process.env.NERF_CONFIG_DIR = before;
+    }
   });
 
   test("readConfig returns defaults when no file exists", () => {
